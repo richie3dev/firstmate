@@ -21,16 +21,20 @@ LINT="$ROOT/bin/fm-lint.sh"
 CI="$ROOT/.github/workflows/ci.yml"
 NM="$ROOT/.no-mistakes.yaml"
 INSTALLER="$ROOT/bin/fm-install-shellcheck.sh"
-# The authoritative file set the one owner must run.
-CANON='shellcheck --norc bin/*.sh bin/backends/*.sh tests/*.sh'
+# The authoritative file set the one owner must run, through the ShellCheck it
+# resolved as the pinned version (never a bare PATH lookup at lint time).
+# shellcheck disable=SC2016 # A literal source line to grep for, not an expansion.
+CANON='"$SHELLCHECK_BIN" --norc bin/*.sh bin/backends/*.sh tests/*.sh'
 # The pinned version, read from the single source (the one owner itself).
 REQUIRED=$("$LINT" --required-version)
 
-# True only when the resolved shellcheck is exactly the pinned version, so the
+# True only when fm-lint.sh can resolve exactly the pinned version, so the
 # lint-running tests below match what CI enforces instead of a runner default.
+# Asks the one owner rather than probing PATH directly, because PATH is only one
+# of the places it resolves from; provisioning is disabled so this stays a
+# read-only probe that never downloads mid-test.
 pinned_ready() {
-  command -v shellcheck >/dev/null 2>&1 || return 1
-  [ "$(shellcheck --version | awk '/^version:/ {print $2; exit}')" = "$REQUIRED" ]
+  FM_LINT_NO_PROVISION=1 "$LINT" --ensure-shellcheck >/dev/null 2>&1
 }
 
 test_owner_exists_and_executable() {
@@ -45,7 +49,8 @@ test_owner_defines_canonical_set() {
   # that would hide findings CI fails on.
   assert_no_grep '--severity' "$LINT" "fm-lint.sh must not lower severity below the CI default"
   assert_no_grep '--exclude' "$LINT" "fm-lint.sh must not blanket-exclude checks CI enforces"
-  [ "$(grep -Fc 'exec shellcheck --norc' "$LINT")" -eq 2 ] || fail "both lint modes must ignore ambient ShellCheck configuration"
+  # shellcheck disable=SC2016 # A literal source line to grep for, not an expansion.
+  [ "$(grep -Fc 'exec "$SHELLCHECK_BIN" --norc' "$LINT")" -eq 2 ] || fail "both lint modes must ignore ambient ShellCheck configuration"
   pass "fm-lint.sh is the sole authoritative definition at CI-default severity"
 }
 
@@ -80,27 +85,97 @@ test_ci_installs_and_logs_the_pinned_version() {
   pass "CI installs and logs the pinned ShellCheck version from the one owner"
 }
 
-test_rejects_wrong_shellcheck_version() {
-  # Version-independent: a fake shellcheck reporting a different version must be
-  # refused before any lint, proving local and CI cannot silently diverge.
-  local tmp fakebin out rc
-  tmp=$(fm_test_tmproot fm-lint-ver)
-  fakebin=$(fm_fakebin "$tmp")
-  cat > "$fakebin/shellcheck" <<'SH'
+# A stub shellcheck that reports $1 as its version and silently passes any lint,
+# so a test that "succeeds" through it proves the wrong binary was used.
+write_fake_shellcheck() {
+  local path=$1 version=$2
+  cat > "$path" <<SH
 #!/usr/bin/env bash
-if [ "$1" = "--version" ]; then
-  printf 'ShellCheck - shell script analysis tool\nversion: 0.9.9\nlicense: x\nwebsite: y\n'
+if [ "\$1" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: $version\nlicense: x\nwebsite: y\n'
   exit 0
 fi
 exit 0
 SH
-  chmod +x "$fakebin/shellcheck"
+  chmod +x "$path"
+}
+
+test_rejects_wrong_shellcheck_version() {
+  # Version-independent: a fake shellcheck reporting a different version must be
+  # refused before any lint, proving local and CI cannot silently diverge.
+  # Provisioning is disabled and the cache pointed at an empty directory, so this
+  # exercises the terminal refusal rather than the self-heal path.
+  local tmp fakebin out rc
+  tmp=$(fm_test_tmproot fm-lint-ver)
+  fakebin=$(fm_fakebin "$tmp")
+  write_fake_shellcheck "$fakebin/shellcheck" 0.9.9
   rc=0
-  out=$(PATH="$fakebin:$PATH" "$LINT" 2>&1) || rc=$?
+  out=$(PATH="$fakebin:$PATH" FM_LINT_NO_PROVISION=1 FM_SHELLCHECK_CACHE="$tmp/cache" "$LINT" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "fm-lint.sh accepted a shellcheck version other than the pin"$'\n'"$out"
   assert_contains "$out" "$REQUIRED" "fm-lint.sh did not name the required version on mismatch"
   assert_contains "$out" "0.9.9" "fm-lint.sh did not report the resolved (wrong) version"
   pass "fm-lint.sh refuses to lint under a non-pinned ShellCheck version"
+}
+
+test_refusal_cannot_be_mistaken_for_a_pass() {
+  # The regression this guards: a refusal that reads like a skipped optional step
+  # invites a hand-rolled `shellcheck -S warning` fallback, which passes work CI
+  # then rejects on info-level findings. The refusal must say, in the output a
+  # human or agent actually reads, that nothing was linted.
+  local tmp fakebin out rc
+  tmp=$(fm_test_tmproot fm-lint-refusal)
+  fakebin=$(fm_fakebin "$tmp")
+  write_fake_shellcheck "$fakebin/shellcheck" 0.9.0
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_LINT_NO_PROVISION=1 FM_SHELLCHECK_CACHE="$tmp/cache" "$LINT" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a non-pinned run exited zero, which is reportable as a pass"$'\n'"$out"
+  assert_contains "$out" "REFUSING TO LINT" "the refusal must be unmistakable in its first line"
+  assert_contains "$out" "NOTHING WAS LINTED" "the refusal must state that no lint ran"
+  assert_contains "$out" "not a pass" "the refusal must deny that it can be read as a pass"
+  assert_contains "$out" "fm-install-shellcheck.sh" "the refusal must name the exact remediation command"
+  pass "a non-pinned run refuses unmistakably and never exits zero"
+}
+
+test_prefers_pinned_cache_over_wrong_path_version() {
+  # The host case this fixes: the machine's own shellcheck is an older version and
+  # must stay untouched, while the gate still runs at the pin from a private cache.
+  if ! pinned_ready; then
+    pass "SKIP (ShellCheck $REQUIRED not resolved): cache-over-PATH resolution check"
+    return
+  fi
+  local tmp fakebin cache out rc real
+  tmp=$(fm_test_tmproot fm-lint-cache)
+  fakebin=$(fm_fakebin "$tmp")
+  write_fake_shellcheck "$fakebin/shellcheck" 0.9.0
+  cache="$tmp/cache"
+  mkdir -p "$cache/$REQUIRED"
+  real=$(FM_LINT_NO_PROVISION=1 "$LINT" --ensure-shellcheck 2>/dev/null | tail -n 1)
+  cp "$real" "$cache/$REQUIRED/shellcheck"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_LINT_NO_PROVISION=1 FM_SHELLCHECK_CACHE="$cache" \
+    "$LINT" --ensure-shellcheck 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "fm-lint.sh refused despite a pinned build in the cache"$'\n'"$out"
+  assert_contains "$out" "$cache/$REQUIRED/shellcheck" "fm-lint.sh did not resolve the cached pinned build"
+  pass "fm-lint.sh uses the cached pinned build when PATH holds an older shellcheck"
+}
+
+test_cache_is_version_keyed() {
+  # Version keying is what makes provisioning safe while other pipelines run: a
+  # pin bump writes a new path instead of overwriting a binary mid-execution.
+  # shellcheck disable=SC2016 # Literal source lines to grep for, not expansions.
+  assert_grep 'dir="$(cache_root)/$REQUIRED_SHELLCHECK"' "$LINT" "the ShellCheck cache path must be keyed by the pinned version"
+  # shellcheck disable=SC2016 # A literal source line to grep for, not an expansion.
+  assert_grep 'mv -f "$staging/shellcheck"' "$LINT" "provisioning must land the binary by atomic rename, not in-place write"
+  pass "the private ShellCheck cache is version-keyed and provisioned atomically"
+}
+
+test_bootstrap_verifies_the_gate_at_session_start() {
+  # Drift protection: verify at session start, not at push time when a refusal has
+  # already stopped work.
+  local bootstrap="$ROOT/bin/fm-bootstrap.sh"
+  assert_grep 'fm-lint.sh" --ensure-shellcheck' "$bootstrap" "bootstrap must verify the pinned ShellCheck through the one owner"
+  assert_grep 'MISSING: shellcheck' "$bootstrap" "bootstrap must report an unresolvable pinned ShellCheck as an actionable line"
+  pass "session-start bootstrap verifies the lint gate is runnable"
 }
 
 test_catches_a_real_lint_defect() {
@@ -187,6 +262,10 @@ test_nomistakes_invokes_the_owner
 test_pins_an_explicit_version
 test_ci_installs_and_logs_the_pinned_version
 test_rejects_wrong_shellcheck_version
+test_refusal_cannot_be_mistaken_for_a_pass
+test_prefers_pinned_cache_over_wrong_path_version
+test_cache_is_version_keyed
+test_bootstrap_verifies_the_gate_at_session_start
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes

@@ -26,8 +26,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
 SESSION_START="$ROOT/bin/fm-session-start.sh"
-BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-session-start-tests)
+BASE_PATH=${FM_TEST_BASE_PATH:-$(fm_hermetic_base_path "$TMP_ROOT/base-path")}
 fm_git_identity fmtest fmtest@example.invalid
 
 # --- world builders ----------------------------------------------------------
@@ -402,11 +402,15 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
   # Force a MISSING diagnostic line so the bootstrap section is non-trivial.
+  # node is an ordinary system tool, so removing the stub is not enough: this case
+  # needs a base PATH that omits the real one too, or the diagnostic never fires.
+  local nodeless_base
   rm -f "$fakebin/node"
+  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path-no-node" node)
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(run_session_start "$home" "$root" "$fakebin:$nodeless_base")
 
   lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
   boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
@@ -585,12 +589,16 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
+  # As in the ordering case: node must be absent from the base PATH too, not just
+  # from the fakebin, for the real MISSING line to fire.
+  local nodeless_base
   rm -f "$fakebin/node"
+  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path-no-node" node)
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(run_session_start "$home" "$root" "$fakebin:$nodeless_base")
 
   # fm-lock.sh's own exact success text.
   assert_contains "$out" "lock acquired: harness pid" "fm-lock.sh's real output did not appear (composition, not reimplementation)"

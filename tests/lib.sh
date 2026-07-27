@@ -88,6 +88,41 @@ fm_fakebin() {
   printf '%s\n' "$fakebin"
 }
 
+# Tools firstmate detects by PRESENCE (command -v), so a "this tool is missing"
+# fixture cannot be built by shadowing: a stub placed earlier on PATH still reads
+# as present. On a developer machine these are installed into /usr/bin, which sits
+# in the tests' base PATH, so those fixtures silently stopped being reproducible
+# locally while still passing in CI, where the tools are absent. That is the same
+# local/CI disagreement the pinned lint gate exists to prevent, so the base PATH
+# is sanitized by construction instead of by ordering.
+FM_PRESENCE_DETECTED_TOOLS="gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi no-mistakes treehouse herdr orca cmux"
+
+# fm_hermetic_base_path <dir> [extra-name...]: build a symlink farm of the system
+# PATH that omits every presence-detected tool, plus any extra names given, and
+# echo it. Use it as the base PATH so a suite controls those tools entirely
+# through its own fakebin. Pass extra names for a case that must make an ordinary
+# system tool (node, git) genuinely absent.
+fm_hermetic_base_path() {
+  local farm=$1 dir entry name
+  shift
+  local excluded="$FM_PRESENCE_DETECTED_TOOLS $*"
+  if [ ! -d "$farm" ]; then
+    mkdir -p "$farm"
+    for dir in /usr/bin /bin /usr/sbin /sbin; do
+      [ -d "$dir" ] || continue
+      for entry in "$dir"/*; do
+        [ -e "$entry" ] || continue
+        name=${entry##*/}
+        case " $excluded " in
+          *" $name "*) continue ;;
+        esac
+        [ -e "$farm/$name" ] || ln -s "$entry" "$farm/$name"
+      done
+    done
+  fi
+  printf '%s\n' "$farm"
+}
+
 fm_fake_exit0() {
   local fakebin=$1 tool
   shift

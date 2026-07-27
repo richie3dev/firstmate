@@ -54,6 +54,13 @@
 #          tasks-axi default backend is silent. quota-axi is required because
 #          crew-dispatch quota-balanced may call it; fm-dispatch-select.sh still
 #          degrades at runtime when quota data is unavailable.
+#          The lint gate's pinned ShellCheck is checked through
+#          bin/fm-lint.sh --ensure-shellcheck, its one owner, so the gate is known
+#          runnable at session start instead of refusing at push time. A locked
+#          session provisions fm-lint.sh's private version-keyed cache (a no-op
+#          once cached, never a write to the machine's own shellcheck); a
+#          detect-only session reports without provisioning. MISSING: shellcheck
+#          means the pinned build could not be resolved or installed.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -486,6 +493,7 @@ install_cmd() {
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
+    shellcheck) echo "bin/fm-install-shellcheck.sh <dir-on-PATH>  # must be the version bin/fm-lint.sh --required-version prints" ;;
     *) return 1 ;;
   esac
 }
@@ -831,6 +839,16 @@ if command -v no-mistakes >/dev/null 2>&1 && ! no_mistakes_compatible; then
 fi
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
+fi
+# Verify the lint gate's pinned ShellCheck at session start rather than at push
+# time, when a refusal has already stopped work. A locked session provisions the
+# private cache (bounded, and a no-op once cached); a detect-only session only
+# reports. Silence means the pre-push lint gate will run the same rule set CI does.
+if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
+  FM_LINT_NO_PROVISION=1 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1 \
+    || echo "MISSING: shellcheck (install: $(install_cmd shellcheck))"
+elif ! timeout 120 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1; then
+  echo "MISSING: shellcheck (install: $(install_cmd shellcheck))"
 fi
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
