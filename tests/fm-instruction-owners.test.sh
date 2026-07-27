@@ -14,6 +14,8 @@ CODING="$ROOT/.agents/skills/firstmate-coding-guidelines/SKILL.md"
 RECOVERY="$ROOT/.agents/skills/stuck-crewmate-recovery/SKILL.md"
 SECONDMATE="$ROOT/.agents/skills/secondmate-provisioning/SKILL.md"
 CONFIG="$ROOT/docs/configuration.md"
+INVENTORY="$ROOT/docs/state-inventory.md"
+COMPLETION="$ROOT/.agents/skills/task-completion/SKILL.md"
 AGENTS="$ROOT/AGENTS.md"
 BRIEF="$ROOT/bin/fm-brief.sh"
 
@@ -170,6 +172,72 @@ test_state_startup_and_ordinary_recovery_placement() {
   pass "state, startup, and ordinary recovery have focused owners and triggers"
 }
 
+test_home_inventory_left_agents_md() {
+  assert_present "$INVENTORY" "the operational-home file inventory doc is missing"
+  assert_grep 'single owner of the exhaustive per-file inventory' "$INVENTORY" \
+    "inventory doc does not declare ownership"
+  assert_grep 'state-inventory.md' "$CONFIG" \
+    "configuration.md does not reach the inventory doc"
+  assert_grep '`docs/state-inventory.md` is the single owner of the exhaustive per-file inventory' "$AGENTS" \
+    "AGENTS.md lost the inventory-doc pointer"
+  # Every internal entry must survive in the inventory doc. Only the away-mode
+  # marker glob may still appear in AGENTS.md, because section 8's stub uses it
+  # as a load trigger rather than as inventory.
+  for entry in \
+    '.subsuper-*' \
+    '.pr-check-migration-scan-v1' \
+    'x-poll.claim-error' \
+    '.wedge-escalations-*' \
+    '<id>.grok-turnend-token' \
+    '<id>.pr-poll-registration' \
+    '.pr-check-quarantine/' \
+    '<id>.check-trust' \
+    'config/cmux-socket-password' \
+    'config/herdr-presentation-spaces'; do
+    assert_grep "$entry" "$INVENTORY" "inventory doc dropped '$entry'"
+  done
+  for entry in \
+    '.pr-check-migration-scan-v1' \
+    'x-poll.claim-error' \
+    '.wedge-escalations-*' \
+    '<id>.grok-turnend-token' \
+    '<id>.pr-poll-registration' \
+    'config/cmux-socket-password'; do
+    if grep -Fq -- "$entry" "$AGENTS"; then
+      fail "AGENTS.md restates internal entry '$entry' instead of pointing at the inventory doc"
+    fi
+  done
+  pass "the exhaustive home inventory lives in its own doc and AGENTS.md points at it"
+}
+
+test_completion_procedure_has_one_owner() {
+  assert_present "$COMPLETION" "the task-completion skill is missing"
+  assert_grep 'name: task-completion' "$COMPLETION" "task-completion metadata has the wrong name"
+  assert_grep 'user-invocable: false' "$COMPLETION" "task-completion must not be user-invocable"
+  assert_grep '  internal: true' "$COMPLETION" "task-completion must be internal"
+  local count
+  count=$(grep -Fc -- '- `task-completion` -' "$AGENTS")
+  [ "$count" -eq 1 ] || fail "task-completion must have exactly one AGENTS.md trigger entry, found $count"
+  for phrase in \
+    'bin/fm-pr-check.sh <id> <PR url>' \
+    'bin/fm-check-register.sh <id>' \
+    'bin/fm-promote.sh' \
+    'retain only the configured recent Done history' \
+    'a reproduced bug becomes the regression test'; do
+    assert_grep "$phrase" "$COMPLETION" "task-completion owner is missing '$phrase'"
+    if grep -Fq -- "$phrase" "$AGENTS"; then
+      fail "AGENTS.md restates completion procedure '$phrase' instead of pointing at the skill"
+    fi
+  done
+  for phrase in \
+    'Tear down a ship task only after landing is confirmed' \
+    'never by shell liveness or the last status event' \
+    'does not authorize it'; do
+    assert_grep "$phrase" "$AGENTS" "AGENTS.md lost completion safety fact '$phrase'"
+  done
+  pass "task-completion owns the post-return procedure and AGENTS.md keeps only its trigger and safety floors"
+}
+
 test_compressed_agents_owner_map() {
   assert_grep '`docs/configuration.md` is the single owner of the top-level operational-home layout' "$AGENTS" \
     "AGENTS.md lost the state-layout owner pointer"
@@ -228,5 +296,7 @@ test_generic_effort_fallback_respects_precedence
 test_shared_authoring_requirements_are_owned
 test_secondmate_registry_contract_stays_concise
 test_state_startup_and_ordinary_recovery_placement
+test_home_inventory_left_agents_md
+test_completion_procedure_has_one_owner
 test_compressed_agents_owner_map
 test_compressed_agents_retains_authority_and_supervision_safety
