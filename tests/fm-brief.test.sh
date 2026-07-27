@@ -247,6 +247,72 @@ test_context_discipline_leaves_the_safety_contract_intact() {
   pass "fm-brief.sh: context-discipline section leaves isolation and status contracts intact"
 }
 
+# A crewmate cannot see the rest of the fleet from inside its worktree, so both of
+# these hazards look safe from where it stands. On 2026-07-27 one crew ran
+# `pkill -f "just ci"` to clear a test run it had started; the pattern matched four
+# sibling crews' runs and the caller's own shell, killing its agent. Nothing was lost
+# only because no sibling happened to be mid-suite.
+test_shared_machine_kill_rule_is_in_ship_and_scout_briefs() {
+  local home id brief kind
+  home="$TMP_ROOT/shared-kill-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-kill-$kind-s1"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "Never kill a process you did not start yourself" "$brief" \
+      "$kind brief lost the kill-only-what-you-started rule"
+    assert_grep "Several crews share this machine" "$brief" \
+      "$kind brief lost the shared-machine reason the kill rule exists"
+    assert_grep "Kill only a specific process id you" "$brief" \
+      "$kind brief lost the only permitted way to kill a process"
+    # shellcheck disable=SC2016 # Single quotes are deliberate: this is literal brief text whose backticks must match verbatim, not a command substitution to expand.
+    assert_grep 'never use `pkill`, `killall`, or any other' "$brief" \
+      "$kind brief no longer forbids match-by-pattern kills by name"
+    assert_grep "kill that selects by pattern" "$brief" \
+      "$kind brief no longer forbids the whole match-by-pattern class, only the named tools"
+  done
+  pass "fm-brief.sh: ship and scout briefs forbid killing processes they did not start"
+}
+
+# Observed five times on 2026-07-27 across three tasks. A crewmate backgrounds a
+# `no-mistakes axi` gate call, arms a waiter on the run reaching parked or a terminal
+# state, and is never woken: the pipeline runs in the shared daemon, so the client
+# dying does not stop the run, and steps that report no findings never open a gate for
+# such a waiter to fire on. Only a clock-driven poll closes that window, so the timer
+# has to be required rather than offered alongside the predicate waiter.
+test_timer_poll_rule_is_in_ship_and_scout_briefs() {
+  local home id brief kind
+  home="$TMP_ROOT/timer-poll-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-timer-$kind-s2"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "also arm a fixed-interval poll of the run and re-check it every 5 minutes" "$brief" \
+      "$kind brief lost the required fixed-interval poll or its concrete interval"
+    assert_grep "A dead client does not stop the run" "$brief" \
+      "$kind brief lost the verified reason a run-state waiter cannot fire"
+    assert_grep "steps that find nothing never open a gate at all" "$brief" \
+      "$kind brief lost the reason the silent window does not close on its own"
+    assert_grep "Keep a state-predicate waiter as an optimisation on top of the timer" "$brief" \
+      "$kind brief no longer demotes the state-predicate waiter to an optimisation"
+    assert_grep "the only mechanism. Polling is not progress" "$brief" \
+      "$kind brief either restored the predicate waiter as sufficient alone, or lost the guard keeping the poll from becoming status noise"
+  done
+  pass "fm-brief.sh: ship and scout briefs require a clock-driven poll behind backgrounded gate calls"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -462,6 +528,8 @@ test_context_discipline_is_in_ship_and_scout_briefs
 test_context_discipline_scratch_is_isolated_and_unstageable
 test_context_discipline_persistence_target_is_scaffold_specific
 test_context_discipline_leaves_the_safety_contract_intact
+test_shared_machine_kill_rule_is_in_ship_and_scout_briefs
+test_timer_poll_rule_is_in_ship_and_scout_briefs
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
