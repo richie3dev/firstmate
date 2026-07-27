@@ -40,11 +40,11 @@ test_firstmate_never_responds_for_crew_run() {
 }
 
 test_agents_md_keeps_the_binding_stub() {
-  assert_grep 'Load `task-completion` when a no-mistakes validation run must be triggered or judged' \
+  assert_grep "Load \`task-completion\` when a no-mistakes validation run must be triggered or judged" \
     "$ROOT/AGENTS.md" "AGENTS.md lost the task-completion load trigger"
-  assert_grep 'Firstmate never invokes `no-mistakes axi respond` for a crew-owned run' \
+  assert_grep "Firstmate never invokes \`no-mistakes axi respond\` for a crew-owned run" \
     "$ROOT/AGENTS.md" "AGENTS.md lost the inline crew-owned-run safety fact"
-  assert_grep 'never answers one with `--yes`' \
+  assert_grep "never answers one with \`--yes\`" \
     "$ROOT/AGENTS.md" "AGENTS.md lost the inline no-auto-resolve safety fact"
   pass "AGENTS.md keeps the task-completion trigger and the facts that bind before it loads"
 }
