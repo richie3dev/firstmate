@@ -18,6 +18,25 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
+# scaffold_brief <home> <id> ship|scout: generate one brief under <home> against an
+# unregistered project (so the default no-mistakes delivery mode applies) and set
+# BRIEF to its path. Every rule that must reach both work-producing scaffolds is
+# tested against both, so this preamble is otherwise re-rolled by each such test.
+# It sets a global rather than echoing the path because assert_present calls fail,
+# whose exit would be swallowed by a command-substitution subshell.
+BRIEF=
+scaffold_brief() {
+  local home=$1 id=$2 kind=$3
+  mkdir -p "$home/data"
+  if [ "$kind" = scout ]; then
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  else
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+  fi
+  BRIEF="$home/data/$id/brief.md"
+  assert_present "$BRIEF" "$kind: brief was not scaffolded"
+}
+
 # The script itself must always parse. This is the direct regression test for
 # issue #166: a stray apostrophe in any of the three DOD heredoc bodies
 # (no-mistakes/direct-PR/local-only) breaks `bash -n` on the whole file.
@@ -141,28 +160,20 @@ test_ship_project_memory_wording() {
 # ground on through a mid-task compaction instead of committing and handing off.
 # Both work-producing scaffolds must carry all four points.
 test_context_discipline_is_in_ship_and_scout_briefs() {
-  local home id brief kind
+  local home kind
   home="$TMP_ROOT/context-discipline-home"
-  mkdir -p "$home/data"
   for kind in ship scout; do
-    id="brief-context-$kind-e1"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
-    fi
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$kind: brief was not scaffolded"
-    assert_grep "# Context discipline" "$brief" "$kind brief missing the Context discipline section"
-    assert_grep "grep the failures - never the whole run" "$brief" \
+    scaffold_brief "$home" "brief-context-$kind-e1" "$kind"
+    assert_grep "# Context discipline" "$BRIEF" "$kind brief missing the Context discipline section"
+    assert_grep "grep the failures - never the whole run" "$BRIEF" \
       "$kind brief lost the long-output-to-a-file rule"
-    assert_grep "Read targeted line ranges of large files" "$brief" \
+    assert_grep "Read targeted line ranges of large files" "$BRIEF" \
       "$kind brief lost the targeted-read rule"
-    assert_grep "so a compaction cannot lose them" "$brief" \
+    assert_grep "so a compaction cannot lose them" "$BRIEF" \
       "$kind brief lost the persist-findings-as-you-go rule"
-    assert_grep "If you approach compacting mid-task, stop instead" "$brief" \
+    assert_grep "If you approach compacting mid-task, stop instead" "$BRIEF" \
       "$kind brief lost the stop-and-hand-off rule"
-    assert_grep "Stopping is the correct move here, not a failure" "$brief" \
+    assert_grep "Stopping is the correct move here, not a failure" "$BRIEF" \
       "$kind brief lost the reassurance that makes crews willing to stop"
   done
   pass "fm-brief.sh: ship and scout briefs carry the context-discipline contract"
@@ -173,25 +184,17 @@ test_context_discipline_is_in_ship_and_scout_briefs() {
 # rides into the PR on `git add -A`; the self-ignoring .fm-scratch/ directory is
 # the one mechanism that avoids both without writing outside the worktree.
 test_context_discipline_scratch_is_isolated_and_unstageable() {
-  local home id brief kind
+  local home kind
   home="$TMP_ROOT/context-scratch-home"
-  mkdir -p "$home/data"
   for kind in ship scout; do
-    id="brief-scratch-$kind-e3"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
-    fi
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$kind: brief was not scaffolded"
-    assert_no_grep "/tmp/run.log" "$brief" \
+    scaffold_brief "$home" "brief-scratch-$kind-e3" "$kind"
+    assert_no_grep "/tmp/run.log" "$BRIEF" \
       "$kind brief still sends command output to a /tmp path shared by every concurrent crew"
-    assert_grep "printf '*\\n' > .fm-scratch/.gitignore" "$brief" \
+    assert_grep "printf '*\\n' > .fm-scratch/.gitignore" "$BRIEF" \
       "$kind brief lost the self-ignoring scratch directory that keeps scratch out of the diff"
-    assert_grep ">.fm-scratch/run.log 2>&1" "$brief" \
+    assert_grep ">.fm-scratch/run.log 2>&1" "$BRIEF" \
       "$kind brief lost the in-worktree command-log path"
-    assert_no_grep ".git/info/exclude" "$brief" \
+    assert_no_grep ".git/info/exclude" "$BRIEF" \
       "$kind brief ignores scratch through the worktree's shared common dir instead of a nested .gitignore"
   done
   pass "fm-brief.sh: context-discipline scratch stays in-worktree and unstageable"
@@ -253,28 +256,23 @@ test_context_discipline_leaves_the_safety_contract_intact() {
 # sibling crews' runs and the caller's own shell, killing its agent. Nothing was lost
 # only because no sibling happened to be mid-suite.
 test_shared_machine_kill_rule_is_in_ship_and_scout_briefs() {
-  local home id brief kind
+  local home kind
   home="$TMP_ROOT/shared-kill-home"
-  mkdir -p "$home/data"
   for kind in ship scout; do
-    id="brief-kill-$kind-s1"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
-    fi
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$kind: brief was not scaffolded"
-    assert_grep "Never kill a process you did not start yourself" "$brief" \
-      "$kind brief lost the kill-only-what-you-started rule"
-    assert_grep "Several crews share this machine" "$brief" \
+    scaffold_brief "$home" "brief-kill-$kind-s1" "$kind"
+    # The number is pinned, not just the text: both Rules lists are hand-numbered
+    # independently of the shared block, so an inserted rule or a moved
+    # interpolation point silently duplicates a number instead of failing here.
+    assert_grep "8. Never kill a process you did not start yourself" "$BRIEF" \
+      "$kind brief lost the kill-only-what-you-started rule, or renumbered it away from 8"
+    assert_grep "Several crews share this machine" "$BRIEF" \
       "$kind brief lost the shared-machine reason the kill rule exists"
-    assert_grep "Kill only a specific process id you" "$brief" \
+    assert_grep "Kill only a specific process id you" "$BRIEF" \
       "$kind brief lost the only permitted way to kill a process"
     # shellcheck disable=SC2016 # Single quotes are deliberate: this is literal brief text whose backticks must match verbatim, not a command substitution to expand.
-    assert_grep 'never use `pkill`, `killall`, or any other' "$brief" \
+    assert_grep 'never use `pkill`, `killall`, or any other' "$BRIEF" \
       "$kind brief no longer forbids match-by-pattern kills by name"
-    assert_grep "kill that selects by pattern" "$brief" \
+    assert_grep "kill that selects by pattern" "$BRIEF" \
       "$kind brief no longer forbids the whole match-by-pattern class, only the named tools"
   done
   pass "fm-brief.sh: ship and scout briefs forbid killing processes they did not start"
@@ -286,29 +284,44 @@ test_shared_machine_kill_rule_is_in_ship_and_scout_briefs() {
 # dying does not stop the run, and steps that report no findings never open a gate for
 # such a waiter to fire on. Only a clock-driven poll closes that window, so the timer
 # has to be required rather than offered alongside the predicate waiter.
+# The poll also needs its own stop condition, or a run that has stopped rather than
+# slowed is polled forever and firstmate is back to noticing an idle pane. That bound
+# reads the activity timestamp the run reports, never the step name: a healthy step was
+# measured holding one name for sixty-seven minutes while genuinely working.
 test_timer_poll_rule_is_in_ship_and_scout_briefs() {
-  local home id brief kind
+  local home kind
   home="$TMP_ROOT/timer-poll-home"
-  mkdir -p "$home/data"
   for kind in ship scout; do
-    id="brief-timer-$kind-s2"
-    if [ "$kind" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
-    fi
-    brief="$home/data/$id/brief.md"
-    assert_present "$brief" "$kind: brief was not scaffolded"
-    assert_grep "also arm a fixed-interval poll of the run and re-check it every 5 minutes" "$brief" \
+    scaffold_brief "$home" "brief-timer-$kind-s2" "$kind"
+    assert_grep "9. When you background a long call" "$BRIEF" \
+      "$kind brief lost the backgrounded-call rule, or renumbered it away from 9"
+    assert_grep "also arm a fixed-interval poll of the run and re-check it every 5 minutes" "$BRIEF" \
       "$kind brief lost the required fixed-interval poll or its concrete interval"
-    assert_grep "A dead client does not stop the run" "$brief" \
+    assert_grep "A dead client does not stop the run" "$BRIEF" \
       "$kind brief lost the verified reason a run-state waiter cannot fire"
-    assert_grep "steps that find nothing never open a gate at all" "$brief" \
+    assert_grep "steps that find nothing never open a gate at all" "$BRIEF" \
       "$kind brief lost the reason the silent window does not close on its own"
-    assert_grep "Keep a state-predicate waiter as an optimisation on top of the timer" "$brief" \
+    assert_grep "Stop polling once the run reaches a gate or a terminal outcome" "$BRIEF" \
+      "$kind brief lost the condition that ends the poll on a healthy run"
+    # shellcheck disable=SC2016 # Single quotes are deliberate: this is literal brief text whose backticks must match verbatim, not a command substitution to expand.
+    assert_grep 'the last activity of the run prefixed with `quiet`' "$BRIEF" \
+      "$kind brief no longer bounds the poll on the stalled-run marker no-mistakes already publishes"
+    assert_grep "on two consecutive polls, the run has stopped rather than" "$BRIEF" \
+      "$kind brief lost the two-poll confirmation that separates a stopped run from a slow one"
+    # shellcheck disable=SC2016 # Single quotes are deliberate: this is literal brief text whose backticks must match verbatim, not a command substitution to expand.
+    assert_grep 'append `blocked: {run id} not advancing` and stop' "$BRIEF" \
+      "$kind brief lets a stalled run keep polling instead of escalating it to firstmate"
+    assert_grep "reported activity timestamp and never on the step name staying the same" "$BRIEF" \
+      "$kind brief dropped the prohibition on bounding by step name, which false-fires on healthy long steps"
+    assert_grep "Keep a state-predicate waiter as an optimisation on top of the timer" "$BRIEF" \
       "$kind brief no longer demotes the state-predicate waiter to an optimisation"
-    assert_grep "the only mechanism. Polling is not progress" "$brief" \
+    assert_grep "the only mechanism. Polling is not progress" "$BRIEF" \
       "$kind brief either restored the predicate waiter as sufficient alone, or lost the guard keeping the poll from becoming status noise"
+    # The cross-reference is only meaningful while rule 4 is still the status rule.
+    assert_grep "report status as sparsely as rule 4 requires" "$BRIEF" \
+      "$kind brief lost the pointer from the poll back to the sparse status contract"
+    assert_grep "4. Report status by appending one line" "$BRIEF" \
+      "$kind brief renumbered the status rule, leaving the poll pointing at a rule 4 that no longer exists"
   done
   pass "fm-brief.sh: ship and scout briefs require a clock-driven poll behind backgrounded gate calls"
 }

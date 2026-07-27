@@ -237,10 +237,22 @@ EOF
 # seventy minutes. Five minutes bounds the silent window well under the thirteen minutes
 # of dead idle actually observed, costs about three polls on a long round and usually
 # none on a short one, and stays far from the per-minute polling the constraint forbids.
+# Rule 9's termination bound keys off the activity timestamp the run itself reports and
+# never off the step name staying the same: a healthy test step was measured holding
+# "fixing" for sixty-seven minutes while genuinely working, and a healthy review step
+# reported no new activity for over five minutes before completing normally at seven, so
+# a step-unchanged check and any hand-picked silence threshold both report false blocks.
+# no-mistakes already publishes the right signal - `axi status` prefixes last_activity
+# with "quiet" once no step log or agent lifecycle activity has arrived for longer than
+# its configured step_quiet_warning (default ten minutes) - so the rule defers to that
+# marker instead of adding a competing constant, and the threshold stays owned in one place.
+# The body avoids apostrophes: bash tracks quote state through a heredoc body while it
+# scans for the closing `)` of the command substitution, so one stray apostrophe here
+# breaks `bash -n` on the whole script under the bash 3.2 this repo still targets.
 SHARED_RULES=$(cat <<'EOF'
 8. Never kill a process you did not start yourself. Several crews share this machine, so a
-   match-by-pattern kill such as `pkill -f "just ci"` reaches every other crew's run, and
-   frequently the calling agent's own shell as well. Kill only a specific process id you
+   match-by-pattern kill such as `pkill -f "just ci"` reaches the runs of every other crew,
+   and frequently the shell of the calling agent as well. Kill only a specific process id you
    captured when you started that process; never use `pkill`, `killall`, or any other
    kill that selects by pattern.
 9. When you background a long call whose return is your only cue to continue - a `no-mistakes axi`
@@ -249,6 +261,12 @@ SHARED_RULES=$(cat <<'EOF'
    advancing, and steps that find nothing never open a gate at all. A waiter armed only on
    "parked" or on a terminal state therefore cannot fire, because what died was the client, not
    the run. A timer fires on the clock instead, so the silence stays bounded at one interval.
+   Stop polling once the run reaches a gate or a terminal outcome. If instead `axi status` reports
+   the last activity of the run prefixed with `quiet` - the stalled-run marker no-mistakes emits
+   from its own `step_quiet_warning` - on two consecutive polls, the run has stopped rather than
+   slowed, so append `blocked: {run id} not advancing` and stop. Bound that decision on the
+   reported activity timestamp and never on the step name staying the same: a healthy step can
+   hold one name for over an hour while reporting activity throughout.
    Keep a state-predicate waiter as an optimisation on top of the timer if you want it, never as
    the only mechanism. Polling is not progress: report status as sparsely as rule 4 requires.
 EOF
