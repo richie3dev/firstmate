@@ -2,7 +2,7 @@
 name: stuck-crewmate-recovery
 description: >-
   Agent-only playbook for stuck or missing ordinary Firstmate direct reports.
-  Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+  Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, a failed steer, or a crewmate's own declared context handoff.
   Reconciles recorded work before escalating from targeted inspection through safe relaunch or failure.
 user-invocable: false
 metadata:
@@ -11,7 +11,7 @@ metadata:
 
 # stuck-crewmate-recovery
 
-Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
+Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, declaring its own context exhausted, or when a steer failed to land.
 
 Load `harness-adapters` before sending an interrupt, exit command, resume command, or harness-specific skill invocation.
 The target window's harness is recorded as `harness=` in `state/<id>.meta`.
@@ -47,3 +47,12 @@ Escalate in order:
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
    The worktree and commits persist, so relaunch is cheap.
 5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
+
+## Declared context handoff
+
+Step 4 governs a low context reading you merely observed, while this case is one the crewmate itself declared by appending `blocked: context exhausted` and naming a handoff, which is a request to be relaunched rather than evidence of a wedge.
+Steer it to commit what works, write that handoff naming what is done and what remains, and stop; a crewmate driving an active no-mistakes run hands off without committing, because the pipeline owns its tree.
+Clear its context in place with the adapter's clear command, or resume its recorded session, instead of creating a new task.
+Re-brief it with a short pointer at its own handoff file rather than replaying the original brief.
+Reuse the same worktree, because its commits and handoff are waiting there and a fresh spawn would allocate a different worktree and split one task across two copies.
+An exited `claude` crewmate prints its `--resume <session-id>` line on the way out, so relaunching with the recorded spawn flags restores that session in place.

@@ -41,9 +41,15 @@
 # blocked when firstmate must act.
 # Ship and scout scaffolds both carry a short context-discipline section: pipe
 # long command output to a file and read only the summary and grepped failures,
-# read targeted line ranges of large files, persist findings to the worktree as
-# they are made, and stop-commit-hand off rather than grinding on through a
-# mid-task compaction.
+# read targeted line ranges of large files, persist findings as they are made,
+# and stop-and-hand-off rather than grinding on through a mid-task compaction.
+# Scratch goes to .fm-scratch/ at the worktree root, self-ignored by a nested
+# .gitignore holding "*", so concurrent crews cannot collide over a shared /tmp
+# path and `git add -A` cannot sweep scratch into the PR.
+# Its durable target is scaffold-specific: a scout persists into its report,
+# which outlives the discarded worktree, while a ship persists into the worktree
+# whose commits survive relaunch, and a ship hands off WITHOUT committing while a
+# no-mistakes run is active so the section cannot contradict that definition of done.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -197,15 +203,21 @@ REPO=${POS[1]}
 # Shared by ship and scout scaffolds. Deliberately short: a crewmate reads this
 # at minute one and needs it at minute ninety, so it has to survive in a window
 # that is already filling up.
-CONTEXT_SECTION=$(cat <<'EOF'
+# $1 is point 3's durable-persistence sentence and $2 is point 4's stop clause.
+# The scratch directory is ignored by a nested .gitignore rather than by
+# .git/info/exclude, because in a linked worktree that path resolves to the
+# shared common dir and the append would reach outside the crewmate's isolation.
+context_section() {
+  cat <<EOF
 # Context discipline
 Your context window is finite, and work done in a full one is worse than work done in a fresh one.
-1. Send long-running command output to a file (`<command> >/tmp/run.log 2>&1`), then read the tail and grep the failures - never the whole run. A full suite is thousands of tests whose useful output is a handful of lines.
+Keep scratch in \`.fm-scratch/\` at the worktree root, created once with \`mkdir -p .fm-scratch && printf '*\n' > .fm-scratch/.gitignore\`, so it stays inside your isolation and out of every commit and diff.
+1. Send long-running command output there (\`<command> >.fm-scratch/run.log 2>&1\`), then read the tail and grep the failures - never the whole run. A full suite is thousands of tests whose useful output is a handful of lines.
 2. Read targeted line ranges of large files. A long report or source file is rarely worth reading end to end, and doing so before your real work starts can cost you the whole window.
-3. Write your findings and code map to a file in this worktree as you make them, so a compaction cannot lose them.
-4. If you approach compacting mid-task, stop instead: commit what works, write a handoff file naming what is done and what remains, append `blocked: context exhausted, handoff in {file}, relaunch me` to the status file, and stop. Firstmate relaunches you in this same worktree, where your commits and that file are waiting. Stopping is the correct move here, not a failure - grinding on in a degraded window produces worse work than handing off does.
+3. $1
+4. If you approach compacting mid-task, stop instead: $2, append \`blocked: context exhausted, handoff in {file}, relaunch me\` to the status file, and stop. Firstmate relaunches you in this same worktree and points you back at that handoff. Stopping is the correct move here, not a failure - grinding on in a degraded window produces worse work than handing off does.
 EOF
-)
+}
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -240,6 +252,9 @@ EOF
 fi
 
 if [ "$KIND" = scout ]; then
+CONTEXT_SECTION=$(context_section \
+  "Write findings into \`$DATA/$ID/report.md\` as you make them, so a compaction cannot lose them; the report survives teardown and this worktree does not." \
+  "write what you have into the report and end it with a handoff section naming what is done and what remains")
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -345,6 +360,10 @@ EOF
 )
     ;;
 esac
+
+CONTEXT_SECTION=$(context_section \
+  "Write your findings and code map to \`.fm-scratch/notes.md\` as you make them, so a compaction cannot lose them." \
+  "commit what works (unless a no-mistakes run is active - then hand off without committing), write \`.fm-scratch/handoff.md\` naming what is done and what remains")
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
