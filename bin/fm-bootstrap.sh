@@ -493,7 +493,7 @@ install_cmd() {
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
-    shellcheck) echo "bin/fm-install-shellcheck.sh <dir-on-PATH>  # must be the version bin/fm-lint.sh --required-version prints" ;;
+    shellcheck) echo "bin/fm-lint.sh --ensure-shellcheck  # provisions the pinned build into fm-lint.sh's private cache, which is deliberately never on PATH" ;;
     *) return 1 ;;
   esac
 }
@@ -533,6 +533,25 @@ NO_MISTAKES_MIN_PATCH=2
 
 treehouse_supports_lease() {
   treehouse get --help 2>&1 | grep -Eq '(^|[^[:alnum:]_-])--lease([^[:alnum:]_-]|$)'
+}
+
+# Resolve the lint gate's pinned ShellCheck through bin/fm-lint.sh, its one owner.
+# A detect-only session reports without provisioning; a locked session provisions
+# the private cache, bounded where a timeout command exists. macOS ships neither
+# timeout nor gtimeout by default, and a bare `timeout` there fails with 127, which
+# would report the pinned build as absent when it is present - so a host without
+# either runs the check unbounded rather than lying about the toolchain. The
+# installer's own curl is bounded, so that path still terminates.
+pinned_shellcheck_ready() {
+  if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
+    FM_LINT_NO_PROVISION=1 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout 120 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 120 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1
+  else
+    "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1
+  fi
 }
 
 no_mistakes_version_parts() {
@@ -841,15 +860,9 @@ if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi
 # Verify the lint gate's pinned ShellCheck at session start rather than at push
-# time, when a refusal has already stopped work. A locked session provisions the
-# private cache (bounded, and a no-op once cached); a detect-only session only
-# reports. Silence means the pre-push lint gate will run the same rule set CI does.
-if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" = 1 ]; then
-  FM_LINT_NO_PROVISION=1 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1 \
-    || echo "MISSING: shellcheck (install: $(install_cmd shellcheck))"
-elif ! timeout 120 "$SCRIPT_DIR/fm-lint.sh" --ensure-shellcheck >/dev/null 2>&1; then
-  echo "MISSING: shellcheck (install: $(install_cmd shellcheck))"
-fi
+# time, when a refusal has already stopped work. Silence means the pre-push lint
+# gate will run the same rule set CI does.
+pinned_shellcheck_ready || echo "MISSING: shellcheck (install: $(install_cmd shellcheck))"
 gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
 # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
 # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the

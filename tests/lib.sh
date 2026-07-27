@@ -102,10 +102,19 @@ FM_PRESENCE_DETECTED_TOOLS="gh-axi chrome-devtools-axi lavish-axi tasks-axi quot
 # echo it. Use it as the base PATH so a suite controls those tools entirely
 # through its own fakebin. Pass extra names for a case that must make an ordinary
 # system tool (node, git) genuinely absent.
+#
+# A built farm is reused, so the directory is keyed by the exclusion set rather
+# than by <dir> alone: two calls that exclude different tools must never share a
+# farm, or the second silently gets one that still contains the tool it asked to
+# remove - the very "fixture does not express what it claims" defect this helper
+# exists to eliminate.
 fm_hermetic_base_path() {
   local farm=$1 dir entry name
   shift
   local excluded="$FM_PRESENCE_DETECTED_TOOLS $*"
+  for name in "$@"; do
+    farm="$farm-$name"
+  done
   if [ ! -d "$farm" ]; then
     mkdir -p "$farm"
     for dir in /usr/bin /bin /usr/sbin /sbin; do
@@ -134,6 +143,44 @@ SH
     chmod +x "$fakebin/$tool"
   done
 }
+
+# --- hermetic pinned ShellCheck ---------------------------------------------
+#
+# bin/fm-bootstrap.sh checks the lint gate's pinned ShellCheck through
+# bin/fm-lint.sh at every session start, so every suite that runs bootstrap would
+# otherwise resolve through the developer's real cache and, on a cold one,
+# download the pinned build mid-test - a network call and a write outside the
+# suite's temp root. Give the whole suite a private cache holding a stub that
+# reports the pin, and forbid provisioning outright, so no test can reach the
+# network or touch the machine's own cache no matter how it manipulates PATH.
+# The stub refuses to lint, so it can never make a run that did not lint at the
+# pinned version look like a pass. tests/fm-lint.test.sh owns real lint behavior
+# and opts out by clearing FM_SHELLCHECK_CACHE.
+
+# fm_fake_pinned_shellcheck <path> <version>: a shellcheck that answers --version
+# with <version> and fails loudly on any attempt to actually lint through it.
+fm_fake_pinned_shellcheck() {
+  local path=$1 version=$2
+  cat > "$path" <<SH
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: $version\nlicense: x\nwebsite: y\n'
+  exit 0
+fi
+printf 'fm_fake_pinned_shellcheck: hermetic test stub, it never lints (asked: %s)\n' "\$*" >&2
+exit 2
+SH
+  chmod +x "$path"
+}
+
+export FM_LINT_NO_PROVISION=1
+FM_TEST_SHELLCHECK_CACHE=$(fm_test_tmproot fm-test-shellcheck)
+FM_TEST_SHELLCHECK_VERSION=$("$ROOT/bin/fm-lint.sh" --required-version)
+mkdir -p "$FM_TEST_SHELLCHECK_CACHE/$FM_TEST_SHELLCHECK_VERSION"
+fm_fake_pinned_shellcheck \
+  "$FM_TEST_SHELLCHECK_CACHE/$FM_TEST_SHELLCHECK_VERSION/shellcheck" \
+  "$FM_TEST_SHELLCHECK_VERSION"
+export FM_SHELLCHECK_CACHE="$FM_TEST_SHELLCHECK_CACHE"
 
 # --- deterministic git identity and fixtures --------------------------------
 

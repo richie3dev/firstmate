@@ -406,7 +406,7 @@ EOF
   # needs a base PATH that omits the real one too, or the diagnostic never fires.
   local nodeless_base
   rm -f "$fakebin/node"
-  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path-no-node" node)
+  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path" node)
 
   printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
 
@@ -593,7 +593,7 @@ EOF
   # from the fakebin, for the real MISSING line to fire.
   local nodeless_base
   rm -f "$fakebin/node"
-  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path-no-node" node)
+  nodeless_base=$(fm_hermetic_base_path "$TMP_ROOT/base-path" node)
 
   printf 'needs-decision: pick a library\n' > "$home/state/task-z.status"
   append_wake "$home/state" signal task-z.status "needs-decision: pick a library"

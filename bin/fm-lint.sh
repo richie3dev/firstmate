@@ -47,7 +47,9 @@
 #   fm-lint.sh --ensure-shellcheck resolve (provisioning if needed) the pinned
 #                                  ShellCheck, print its path, and exit; used at
 #                                  session start so the gate is ready before push
-#                                  time rather than failing at it
+#                                  time rather than failing at it. It lints
+#                                  nothing and says so, so a successful resolve
+#                                  can never be read as a lint pass.
 #
 # Exit status is ShellCheck's own on a lint run, so a caller (CI or the gate)
 # fails exactly when ShellCheck reports a finding; an unresolvable pinned
@@ -67,6 +69,12 @@ if [ "${1:-}" = "--required-version" ]; then
   printf '%s\n' "$REQUIRED_SHELLCHECK"
   exit 0
 fi
+
+# Neutralized before ANY ShellCheck invocation, version probes included:
+# ShellCheck parses SHELLCHECK_OPTS even for --version and exits non-zero on an
+# option it rejects, so an ambient value would make the pinned build look
+# unresolvable and send this script down the refusal path.
+unset SHELLCHECK_OPTS
 
 cache_root() {
   printf '%s\n' "${FM_SHELLCHECK_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/firstmate/shellcheck}"
@@ -128,7 +136,7 @@ refuse() {
       "$REQUIRED_SHELLCHECK" "$found" >&2
   fi
   printf 'fm-lint.sh: NOTHING WAS LINTED. This is not a pass, and linting by hand at another version does not substitute for it: it reports a different rule set than CI enforces.\n' >&2
-  printf 'fm-lint.sh: install the pinned build with: bin/fm-install-shellcheck.sh %s/%s\n' \
+  printf 'fm-lint.sh: install the pinned build with: bin/fm-lint.sh --ensure-shellcheck (provisions %s/%s via bin/fm-install-shellcheck.sh; that cache is deliberately never on PATH)\n' \
     "$(cache_root)" "$REQUIRED_SHELLCHECK" >&2
 }
 
@@ -142,16 +150,20 @@ SHELLCHECK_BIN=$(resolve_pinned) || {
   SHELLCHECK_BIN=$(resolve_pinned) || { refuse "$found"; exit 1; }
 }
 
-# Log the resolved version to stderr so both CI and local runs record it.
-printf 'fm-lint.sh: ShellCheck %s (pinned %s) at %s\n' \
-  "$(probe_version "$SHELLCHECK_BIN")" "$REQUIRED_SHELLCHECK" "$SHELLCHECK_BIN" >&2
-
+# Resolve-only mode. Its success must never read like a lint pass in a scrollback
+# or a captured log, so it says outright that it linted nothing rather than
+# leaving a path on stdout as the only difference from a real run.
 if [ "${1:-}" = "--ensure-shellcheck" ]; then
+  printf 'fm-lint.sh: RESOLVE ONLY - ShellCheck %s (pinned %s) is ready at %s.\n' \
+    "$(probe_version "$SHELLCHECK_BIN")" "$REQUIRED_SHELLCHECK" "$SHELLCHECK_BIN" >&2
+  printf 'fm-lint.sh: NO FILES WERE LINTED by this mode - it only readies the gate. Run bin/fm-lint.sh with no arguments to lint.\n' >&2
   printf '%s\n' "$SHELLCHECK_BIN"
   exit 0
 fi
 
-unset SHELLCHECK_OPTS
+# Log the resolved version to stderr so both CI and local runs record it.
+printf 'fm-lint.sh: ShellCheck %s (pinned %s) at %s\n' \
+  "$(probe_version "$SHELLCHECK_BIN")" "$REQUIRED_SHELLCHECK" "$SHELLCHECK_BIN" >&2
 
 if [ "$#" -gt 0 ]; then
   exec "$SHELLCHECK_BIN" --norc "$@"

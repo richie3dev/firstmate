@@ -17,6 +17,12 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# This suite owns real lint behavior, so it must resolve the machine's ACTUAL
+# pinned build rather than tests/lib.sh's hermetic stub cache (which exists so the
+# suites that merely run bootstrap never download one). Cases that need a
+# controlled cache set FM_SHELLCHECK_CACHE themselves.
+unset FM_SHELLCHECK_CACHE
+
 LINT="$ROOT/bin/fm-lint.sh"
 CI="$ROOT/.github/workflows/ci.yml"
 NM="$ROOT/.no-mistakes.yaml"
@@ -175,7 +181,63 @@ test_bootstrap_verifies_the_gate_at_session_start() {
   local bootstrap="$ROOT/bin/fm-bootstrap.sh"
   assert_grep 'fm-lint.sh" --ensure-shellcheck' "$bootstrap" "bootstrap must verify the pinned ShellCheck through the one owner"
   assert_grep 'MISSING: shellcheck' "$bootstrap" "bootstrap must report an unresolvable pinned ShellCheck as an actionable line"
+  # macOS ships no GNU timeout, so a bare `timeout` fails with 127 there and would
+  # report the pinned build absent on a host that has it - a fresh local/CI
+  # disagreement of exactly the kind this gate exists to remove.
+  assert_grep 'gtimeout 120' "$bootstrap" "bootstrap must bound the check with the repo's portable timeout fallback"
   pass "session-start bootstrap verifies the lint gate is runnable"
+}
+
+test_bootstrap_remediation_is_real_and_agrees_with_the_refusal() {
+  # `fm-bootstrap.sh install <tool>` evals this string, and a developer reads it
+  # off the MISSING line, so it must parse as a command and must send them to the
+  # same place fm-lint.sh's own refusal does.
+  local bootstrap="$ROOT/bin/fm-bootstrap.sh" cmd
+  cmd=$(sed -n 's/^ *shellcheck) echo "\(.*\)" ;;$/\1/p' "$bootstrap")
+  [ -n "$cmd" ] || fail "bootstrap has no shellcheck install_cmd entry"
+  cmd=${cmd%%  #*}
+  bash -n -c "$cmd" 2>/dev/null || fail "bootstrap's shellcheck install_cmd does not parse as a command: $cmd"
+  assert_grep "$cmd" "$LINT" "fm-lint.sh's refusal must name the same remediation bootstrap prints"
+  pass "the shellcheck remediation is evaluable and identical in both owners"
+}
+
+test_installer_bounds_its_download() {
+  # The lint gate now reaches the installer automatically, so an unbounded fetch
+  # would hang the gate silently instead of landing on the refusal path.
+  assert_grep '--connect-timeout' "$INSTALLER" "the installer must bound connection setup"
+  assert_grep '--max-time' "$INSTALLER" "the installer must bound the whole download"
+  pass "the pinned-build download is bounded"
+}
+
+test_ensure_mode_is_not_reportable_as_a_lint_pass() {
+  # A resolve that linted nothing must not be shaped like a lint run: exit status
+  # is what automation reads, and a path on stdout is not a distinction.
+  if ! pinned_ready; then
+    pass "SKIP (ShellCheck $REQUIRED not resolved): resolve-only output check"
+    return
+  fi
+  local out rc
+  rc=0
+  out=$(FM_LINT_NO_PROVISION=1 "$LINT" --ensure-shellcheck 2>&1 >/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || fail "--ensure-shellcheck must exit zero on a successful resolve"$'\n'"$out"
+  assert_contains "$out" "RESOLVE ONLY" "the resolve-only mode must announce itself as such"
+  assert_contains "$out" "NO FILES WERE LINTED" "the resolve-only mode must state that it linted nothing"
+  pass "--ensure-shellcheck cannot be mistaken for a lint pass"
+}
+
+test_resolution_survives_ambient_shellcheck_opts() {
+  # ShellCheck parses SHELLCHECK_OPTS even for --version and exits non-zero on an
+  # option it rejects, so a stale ambient value must not make the pinned build
+  # look unresolvable and trigger a pointless download and a refusal.
+  if ! pinned_ready; then
+    pass "SKIP (ShellCheck $REQUIRED not resolved): ambient options resolution check"
+    return
+  fi
+  local out rc
+  rc=0
+  out=$(SHELLCHECK_OPTS='--not-a-real-flag' FM_LINT_NO_PROVISION=1 "$LINT" --ensure-shellcheck 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "ambient SHELLCHECK_OPTS made the pinned build look unresolvable"$'\n'"$out"
+  pass "version resolution ignores ambient ShellCheck options"
 }
 
 test_catches_a_real_lint_defect() {
@@ -266,6 +328,10 @@ test_refusal_cannot_be_mistaken_for_a_pass
 test_prefers_pinned_cache_over_wrong_path_version
 test_cache_is_version_keyed
 test_bootstrap_verifies_the_gate_at_session_start
+test_bootstrap_remediation_is_real_and_agrees_with_the_refusal
+test_installer_bounds_its_download
+test_ensure_mode_is_not_reportable_as_a_lint_pass
+test_resolution_survives_ambient_shellcheck_opts
 test_catches_a_real_lint_defect
 test_ignores_ambient_shellcheck_opts
 test_clean_fixture_passes
