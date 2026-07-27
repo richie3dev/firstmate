@@ -168,12 +168,11 @@ x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnost
 .watch.lock .wake-queue.lock   watcher singleton and queue serialization locks
 .watch-cycle-exits.log  bounded watcher cycle-exit ledger owned by the arm layer, with its .lock
                      (bin/fm-watch-arm.sh)
-.fm-*.XXXXXX         short-lived mktemp scratch files; each belongs to the script that created it
-                     and none outlives its run
+*.XXXXXX             short-lived mktemp scratch files and backup directories under any prefix;
+                     each belongs to the script that created it and none outlives its run
 .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-*
 .last-* .heartbeat-streak      watcher internals; never touch
-.watch-triage.log    watcher's absorbed-wake debug log (size-capped); never relied on, safe to
-                     delete
+.watch-triage.log    watcher's absorbed-wake debug log (size-capped); never relied on
 .last-watcher-beat   watcher liveness beacon, touched every poll (including while absorbing
                      benign wakes); guard scripts read it
 .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
