@@ -71,7 +71,7 @@ Check and test the toolbelt before pushing:
 ```sh
 for script in bin/*.sh bin/backends/*.sh; do bash -n "$script"; done   # syntax-check the toolbelt
 bin/fm-lint.sh   # lint the toolbelt and behavior tests; the single owner CI and the no-mistakes gate both run
-for test_script in tests/*.test.sh; do bash "$test_script"; done   # full behavior suite (CI Behavior job; optional local full run)
+for test_script in tests/*.test.sh; do bash "$test_script"; done   # full behavior suite (CI splits the same scripts across its Behavior shards; optional local full run)
 [ "$(readlink CLAUDE.md)" = "AGENTS.md" ]
 [ "$(readlink .claude/skills)" = "../.agents/skills" ]
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
