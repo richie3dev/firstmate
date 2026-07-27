@@ -109,7 +109,42 @@ test_ci_still_runs_broad_behavior_suite() {
   pass "CI still owns the broad behavior suite and companion jobs"
 }
 
+# The serial suite outgrew its wall clock and CI cancelled it mid-run, which
+# reads as a red check for a suite that was actually passing. Sharding fixes
+# that only while the partition stays complete and disjoint: a selector bug
+# would silently stop running some scripts and still report every shard green,
+# which is worse than the timeout it replaced.
+test_ci_behavior_shards_cover_every_script_exactly_once() {
+  local shard_total position selected index script
+  assert_present "$CI" "ci.yml is missing"
+  grep -Eq '^        shard: \[1, 2, 3, 4\]$' "$CI" \
+    || fail "CI Behavior job must shard over an explicit matrix"
+  grep -Eq '^      fail-fast: false$' "$CI" \
+    || fail "CI Behavior shards must all report; fail-fast would hide sibling failures"
+  shard_total=$(sed -n 's/^          SHARD_TOTAL: \([0-9]\{1,\}\)$/\1/p' "$CI")
+  [ -n "$shard_total" ] || fail "CI Behavior job must declare SHARD_TOTAL"
+  [ "$shard_total" -eq 4 ] \
+    || fail "SHARD_TOTAL ($shard_total) must match the 4-entry shard matrix"
+
+  # Replay the workflow's own round-robin selector over the real inventory.
+  selected=""
+  for index in $(seq 1 "$shard_total"); do
+    position=0
+    for script in "$ROOT"/tests/*.test.sh; do
+      position=$((position + 1))
+      [ "$(((position - 1) % shard_total + 1))" -eq "$index" ] || continue
+      selected="$selected$script"$'\n'
+    done
+  done
+  [ "$(printf '%s' "$selected" | grep -c .)" -eq "$(ls "$ROOT"/tests/*.test.sh | wc -l)" ] \
+    || fail "sharded selection does not cover every tests/*.test.sh exactly once"
+  [ -z "$(printf '%s' "$selected" | sort | uniq -d)" ] \
+    || fail "sharded selection runs at least one script in more than one shard"
+  pass "CI behavior shards partition every test script exactly once"
+}
+
 test_nm_yaml_tracked
 test_nm_keeps_lint_pin
 test_nm_has_no_complete_local_test_command
 test_ci_still_runs_broad_behavior_suite
+test_ci_behavior_shards_cover_every_script_exactly_once
