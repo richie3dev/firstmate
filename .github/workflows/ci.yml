@@ -25,11 +25,21 @@ jobs:
       - run: bin/fm-lint.sh
 
   tests:
-    name: Behavior tests
+    # Sharded because the serial suite outgrew its wall clock: on 2026-07-27 it
+    # ran 15m06s without finishing (1501 passing, 0 failures) and was cancelled
+    # by the cap below, which reads as a red check for a healthy suite. Raising
+    # the cap only defers that, so the work is split instead.
+    name: Behavior tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    # The suite should finish in ~2-3 minutes; this generous cap fails loudly on a
-    # hung watcher or tmux test instead of riding GitHub's 360-minute default.
-    timeout-minutes: 15
+    strategy:
+      # Every shard must report. Cancelling siblings on one failure would hide
+      # which other scripts also broke, which is the whole point of the suite.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # A quarter of the suite runs in ~5 minutes; this cap stays a hang tripwire
+    # with headroom, not the expected healthy end of a shard.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,9 +62,19 @@ jobs:
           set -eu
           npm install -g tasks-axi
           tasks-axi --version
-      - run: |
+      # Round-robin over the sorted glob, so the partition is complete and
+      # disjoint by construction and a new test script joins a shard without
+      # anyone maintaining a list. SHARD_* are passed as env rather than
+      # interpolated into the script body.
+      - env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: 4
+        run: |
           set -eu
+          position=0
           for test_script in tests/*.test.sh; do
+            position=$((position + 1))
+            [ "$(((position - 1) % SHARD_TOTAL + 1))" -eq "$SHARD_INDEX" ] || continue
             "$test_script"
           done
 

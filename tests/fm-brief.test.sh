@@ -136,6 +136,117 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The context-discipline section is standing guidance, not decoration: crews that
+# never got it burned whole windows on one long report or one full test run, and
+# ground on through a mid-task compaction instead of committing and handing off.
+# Both work-producing scaffolds must carry all four points.
+test_context_discipline_is_in_ship_and_scout_briefs() {
+  local home id brief kind
+  home="$TMP_ROOT/context-discipline-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-context-$kind-e1"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "# Context discipline" "$brief" "$kind brief missing the Context discipline section"
+    assert_grep "grep the failures - never the whole run" "$brief" \
+      "$kind brief lost the long-output-to-a-file rule"
+    assert_grep "Read targeted line ranges of large files" "$brief" \
+      "$kind brief lost the targeted-read rule"
+    assert_grep "so a compaction cannot lose them" "$brief" \
+      "$kind brief lost the persist-findings-as-you-go rule"
+    assert_grep "If you approach compacting mid-task, stop instead" "$brief" \
+      "$kind brief lost the stop-and-hand-off rule"
+    assert_grep "Stopping is the correct move here, not a failure" "$brief" \
+      "$kind brief lost the reassurance that makes crews willing to stop"
+  done
+  pass "fm-brief.sh: ship and scout briefs carry the context-discipline contract"
+}
+
+# Scratch must stay inside the worktree and out of the diff. A shared /tmp path
+# lets concurrent crews truncate each other's log, and an unignored scratch file
+# rides into the PR on `git add -A`; the self-ignoring .fm-scratch/ directory is
+# the one mechanism that avoids both without writing outside the worktree.
+test_context_discipline_scratch_is_isolated_and_unstageable() {
+  local home id brief kind
+  home="$TMP_ROOT/context-scratch-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-scratch-$kind-e3"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_no_grep "/tmp/run.log" "$brief" \
+      "$kind brief still sends command output to a /tmp path shared by every concurrent crew"
+    assert_grep "printf '*\\n' > .fm-scratch/.gitignore" "$brief" \
+      "$kind brief lost the self-ignoring scratch directory that keeps scratch out of the diff"
+    assert_grep ">.fm-scratch/run.log 2>&1" "$brief" \
+      "$kind brief lost the in-worktree command-log path"
+    assert_no_grep ".git/info/exclude" "$brief" \
+      "$kind brief ignores scratch through the worktree's shared common dir instead of a nested .gitignore"
+  done
+  pass "fm-brief.sh: context-discipline scratch stays in-worktree and unstageable"
+}
+
+# Point 3's durable target and point 4's handoff differ by scaffold: a scout's
+# worktree is discarded at teardown so only its report survives, while a ship's
+# commits survive in the worktree - and a ship must not commit mid-pipeline,
+# which the no-mistakes definition of done in the same brief forbids.
+test_context_discipline_persistence_target_is_scaffold_specific() {
+  local home ship_brief scout_brief
+  home="$TMP_ROOT/context-target-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-target-ship-e4 some-proj >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-target-scout-e4 some-proj --scout >/dev/null 2>&1
+  ship_brief="$home/data/brief-target-ship-e4/brief.md"
+  scout_brief="$home/data/brief-target-scout-e4/brief.md"
+
+  assert_grep "Write your findings and code map to \`.fm-scratch/notes.md\`" "$ship_brief" \
+    "ship brief lost the in-worktree persistence target"
+  assert_grep "commit what works (unless a no-mistakes run is active - then hand off without committing)" \
+    "$ship_brief" "ship brief tells a crew mid-pipeline to commit, contradicting its definition of done"
+  assert_grep "write \`.fm-scratch/handoff.md\` naming what is done and what remains" "$ship_brief" \
+    "ship brief lost the ignored handoff-file location"
+
+  assert_grep "Write findings into \`$home/data/brief-target-scout-e4/report.md\` as you make them" \
+    "$scout_brief" "scout brief persists findings somewhere other than the report that survives teardown"
+  assert_grep "the report survives teardown and this worktree does not" "$scout_brief" \
+    "scout brief lost the reason its report is the only durable target"
+  assert_grep "end it with a handoff section naming what is done and what remains" "$scout_brief" \
+    "scout brief lost the in-report handoff"
+  assert_grep "(replace that section with the finished work when you resume)" "$scout_brief" \
+    "scout brief would ship a delivered report that still reads as unfinished handoff notes"
+  assert_no_grep "commit what works" "$scout_brief" \
+    "scout brief inherited the ship-only commit clause"
+  assert_no_grep ".fm-scratch/notes.md" "$scout_brief" \
+    "scout brief persists findings into the worktree that teardown discards"
+  pass "fm-brief.sh: context-discipline persistence target is scaffold-specific"
+}
+
+test_context_discipline_leaves_the_safety_contract_intact() {
+  local home brief
+  home="$TMP_ROOT/context-safety-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-context-safety-e2 some-proj >/dev/null 2>&1
+  brief="$home/data/brief-context-safety-e2/brief.md"
+  assert_grep "**Verify isolation before anything else.**" "$brief" \
+    "context-discipline section displaced the worktree-isolation assertion"
+  assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
+    "context-discipline section weakened the primary-checkout refusal"
+  assert_grep "Each append wakes firstmate, so report sparingly" "$brief" \
+    "context-discipline section displaced the status protocol"
+  pass "fm-brief.sh: context-discipline section leaves isolation and status contracts intact"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -347,6 +458,10 @@ test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_context_discipline_is_in_ship_and_scout_briefs
+test_context_discipline_scratch_is_isolated_and_unstageable
+test_context_discipline_persistence_target_is_scaffold_specific
+test_context_discipline_leaves_the_safety_contract_intact
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
