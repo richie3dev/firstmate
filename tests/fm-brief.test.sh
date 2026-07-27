@@ -223,6 +223,8 @@ test_context_discipline_persistence_target_is_scaffold_specific() {
     "scout brief lost the reason its report is the only durable target"
   assert_grep "end it with a handoff section naming what is done and what remains" "$scout_brief" \
     "scout brief lost the in-report handoff"
+  assert_grep "(replace that section with the finished work when you resume)" "$scout_brief" \
+    "scout brief would ship a delivered report that still reads as unfinished handoff notes"
   assert_no_grep "commit what works" "$scout_brief" \
     "scout brief inherited the ship-only commit clause"
   assert_no_grep ".fm-scratch/notes.md" "$scout_brief" \

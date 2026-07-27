@@ -208,6 +208,7 @@ REPO=${POS[1]}
 # .git/info/exclude, because in a linked worktree that path resolves to the
 # shared common dir and the append would reach outside the crewmate's isolation.
 context_section() {
+  # Unquoted <<EOF is deliberate so $1 and $2 interpolate; every backtick and $ in the body below must therefore stay hand-escaped, or it runs at scaffold time and bakes its output into every brief.
   cat <<EOF
 # Context discipline
 Your context window is finite, and work done in a full one is worse than work done in a fresh one.
@@ -254,7 +255,7 @@ fi
 if [ "$KIND" = scout ]; then
 CONTEXT_SECTION=$(context_section \
   "Write findings into \`$DATA/$ID/report.md\` as you make them, so a compaction cannot lose them; the report survives teardown and this worktree does not." \
-  "write what you have into the report and end it with a handoff section naming what is done and what remains")
+  "write what you have into the report and end it with a handoff section naming what is done and what remains (replace that section with the finished work when you resume)")
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
