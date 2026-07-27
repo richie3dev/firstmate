@@ -58,8 +58,9 @@ The always-loaded contract operates directly on a small set of these paths:
 - `state/<id>.status` wake events, `state/<id>.meta` task metadata, `state/<id>.check.sh` slow polls, `state/.wake-queue` durable queued wakes, and `state/.afk` away mode (sections 7, 8, and 14).
 - The `config/` operating choices, each read by the section that uses it: crewmate, secondmate, and dispatch harness selection and the runtime backend (section 4), the backlog backend (section 10), and X mode (section 14).
 
-Every other entry under `state/` belongs to a producing script - watcher, sub-supervisor, PR-poll, migration, and X-relay internals.
-Never write to, delete, or reason from one; `docs/state-inventory.md` identifies any of them you have found.
+Watcher and sub-supervisor internals are the hard exception: never write to or delete one, whatever a procedure appears to call for.
+Every other entry under `state/` belongs to its producing script or to the skill that manages it, so read it to identify what you have found, and write to or delete it only where a loaded owner's own procedure covers that entry.
+`docs/state-inventory.md` names the owner of any entry you find.
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
 Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as the main-authoritative shared captain-preference file for secondmate inheritance, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.

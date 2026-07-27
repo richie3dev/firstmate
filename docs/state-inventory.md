@@ -50,7 +50,7 @@ config/backlog-backend  backlog backend override; absent or "tasks-axi" = defaul
                      inherited by secondmate homes
 config/backend       runtime session-provider backend override for new tasks; absent = falls
                      through to runtime auto-detection (the runtime firstmate itself is
-                     executing inside), then tmux. See "Runtime backend" below
+                     executing inside), then tmux; see docs/configuration.md "Runtime backend"
 config/herdr-presentation-spaces  optional presence flag for Herdr's default-off disposable
                      single-task visual projection; inherited by secondmate homes; see
                      docs/herdr-backend.md "Optional disposable single-task presentation spaces"
@@ -62,12 +62,7 @@ config/wedge-alarm   optional away-mode wedge-alarm active-alert directives; abs
 config/x-mode.env    generated X-mode watcher cadence; source before arming watcher when present
 ```
 
-#### Runtime backend
-
-`tmux` is the verified reference backend (`docs/tmux-backend.md`), while `herdr`, `zellij`, `orca`, and `cmux` are experimental spawn backends (`docs/herdr-backend.md`, `docs/zellij-backend.md`, `docs/orca-backend.md`, `docs/cmux-backend.md`).
-`herdr` and `cmux` can also be selected by runtime auto-detection; `zellij` and `orca` never are and must always be explicit.
-`codex-app` is not accepted as a runtime backend; see `docs/codex-app-backend.md`.
-`config/backend` is not inherited into secondmate homes.
+Which backends are verified, which are experimental, which are auto-detectable, and how `config/backend` inherits are owned by [`docs/configuration.md`](configuration.md) ("Runtime backend").
 
 ### `data/` - durable private fleet records
 
@@ -96,7 +91,8 @@ Cloned repos, gitignored, and read-only to firstmate except through the guarded 
 ### `state/` - volatile runtime signals
 
 The entries firstmate's always-loaded contract operates on directly are `<id>.status`, `<id>.meta`, `<id>.check.sh`, `.wake-queue`, and `.afk`.
-Every other entry belongs to its producing script: read it only to identify a file you have found, and never write to, delete, or reason from it.
+Watcher and sub-supervisor internals are the hard exception: never write to or delete one, whatever a procedure appears to call for.
+Every other entry belongs to its producing script or to the skill that manages it, so read it to identify a file you have found, and write to or delete it only where a loaded owner's own procedure covers that entry.
 
 ```
 <id>.status          appended by crewmates: "<state>: <note>" wake-event lines, not
@@ -123,6 +119,8 @@ Every other entry belongs to its producing script: read it only to identify a fi
                      disposable single-task presentation spaces"
 <id>.check-trust     private content binding created by bin/fm-check-register.sh for an
                      intentional custom check
+<id>.pi-ext.ts       generated pi turn-end extension for the task, written by bin/fm-spawn.sh and
+                     removed by bin/fm-teardown.sh
 <id>.pr-poll         private validated data sidecar for the byte-static PR merge poll
 <id>.pr-poll-registration  private transactional provenance record binding the task, canonical
                      metadata identity, sidecar, and static poll publication
@@ -143,9 +141,35 @@ x-outbox/            generated X-mode dry-run reply and dismiss previews; inspec
                      FMX_DRY_RUN is set
 x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
 .wake-queue          durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
+.wake-queue.seq      monotonic wake sequence counter written under the queue lock
+                     (bin/fm-wake-lib.sh); .wake-queue.drain.* and .wake-queue.restore.* are its
+                     transient per-process working files
 .afk                 durable away-mode flag; present = sub-supervisor may inject escalations
-                     (set by /afk, cleared on captain return)
+                     (set by /afk, cleared on captain return). bin/fm-afk-start.sh writes it and
+                     bin/fm-afk-launch.sh stages it through .afk.pending.* siblings
+.afk-return-catchup  durable away-mode return gate written before daemon shutdown by
+                     bin/fm-afk-return.sh and read by bin/fm-afk-launch.sh, with its
+                     .afk-return-catchup.lock and .afk-return-catchup.pending.* siblings
+.afk-daemon-terminal  away-mode daemon terminal record written by bin/fm-afk-launch.sh, with its
+                     .pending.* siblings; bin/fm-afk-return.sh reads it as a return-gate input
+.afk-launch.lock     away-mode launch singleton lock (bin/fm-afk-launch.sh)
+.lock                per-home firstmate session lock holding the harness process PID; written by
+                     bin/fm-lock.sh and acquired and reported by bin/fm-session-start.sh
+                     (AGENTS.md sections 2 and 3)
+.spawn-<id>.lock     per-task spawn serialization lock preventing a concurrent duplicate spawn
+                     (bin/fm-spawn.sh)
+.secondmate-nudge-pending/    retry markers for secondmate nudges the bootstrap could not deliver
+                     (bin/fm-bootstrap.sh)
+.guard-watcher-stale-banner   stale-watcher banner episode marker, with its .lock (bin/fm-guard.sh)
+.pi-turnend-extension-loaded .pi-watch-extension-loaded   pi extension load markers
+                     (bin/fm-session-start.sh)
+.fm-inherited-config-reread*  inherited-config reread instructions, retry stages, and quarantine,
+                     with .fm-inherited-config.lock (bin/fm-config-inherit-lib.sh)
 .watch.lock .wake-queue.lock   watcher singleton and queue serialization locks
+.watch-cycle-exits.log  bounded watcher cycle-exit ledger owned by the arm layer, with its .lock
+                     (bin/fm-watch-arm.sh)
+.fm-*.XXXXXX         short-lived mktemp scratch files; each belongs to the script that created it
+                     and none outlives its run
 .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-*
 .last-* .heartbeat-streak      watcher internals; never touch
 .watch-triage.log    watcher's absorbed-wake debug log (size-capped); never relied on, safe to
