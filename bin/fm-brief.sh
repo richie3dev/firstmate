@@ -55,7 +55,10 @@
 # and never match by pattern, because many crews share one box; and back every
 # backgrounded gate call with a fixed-interval poll rather than a waiter armed on the
 # run's own state, because a dead client leaves the run advancing in the shared daemon
-# and steps that find nothing never open a gate for such a waiter to fire on.
+# and steps that find nothing never open a gate for such a waiter to fire on. That poll
+# stops at a gate or terminal outcome, and instead appends `blocked:` and stops when the
+# run's own reported activity stays marked quiet across two consecutive polls, so it
+# neither spins forever nor leaves a stopped run unreported.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
