@@ -115,28 +115,51 @@ test_ci_still_runs_broad_behavior_suite() {
 # would silently stop running some scripts and still report every shard green,
 # which is worse than the timeout it replaced.
 test_ci_behavior_shards_cover_every_script_exactly_once() {
-  local shard_total position selected index script
+  local shard_total shard_list expected_list name_total selector position selected index script
+  local -a inventory
   assert_present "$CI" "ci.yml is missing"
-  grep -Eq '^        shard: \[1, 2, 3, 4\]$' "$CI" \
-    || fail "CI Behavior job must shard over an explicit matrix"
   grep -Eq '^      fail-fast: false$' "$CI" \
     || fail "CI Behavior shards must all report; fail-fast would hide sibling failures"
   shard_total=$(sed -n 's/^          SHARD_TOTAL: \([0-9]\{1,\}\)$/\1/p' "$CI")
   [ -n "$shard_total" ] || fail "CI Behavior job must declare SHARD_TOTAL"
-  [ "$shard_total" -eq 4 ] \
-    || fail "SHARD_TOTAL ($shard_total) must match the 4-entry shard matrix"
 
-  # Replay the workflow's own round-robin selector over the real inventory.
+  # The matrix, SHARD_TOTAL and the rendered job name each spell the shard
+  # count. Assert they agree instead of pinning today's number in each place:
+  # a SHARD_TOTAL raised past the matrix would leave the extra slots' scripts
+  # unrun while every listed shard still reports green.
+  shard_list=$(sed -n 's/^        shard: \[\(.*\)\]$/\1/p' "$CI")
+  [ -n "$shard_list" ] || fail "CI Behavior job must shard over an explicit matrix"
+  expected_list=$(seq 1 "$shard_total" | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+  [ "$shard_list" = "$expected_list" ] \
+    || fail "shard matrix [$shard_list] must list exactly 1..$shard_total to match SHARD_TOTAL"
+  name_total=$(sed -n 's|^    name: Behavior tests (shard .*/\([0-9]\{1,\}\))$|\1|p' "$CI")
+  [ -n "$name_total" ] \
+    || fail "CI Behavior job name must render as 'Behavior tests (shard N/TOTAL)'"
+  [ "$name_total" -eq "$shard_total" ] \
+    || fail "job name renders shard N/$name_total but SHARD_TOTAL is $shard_total"
+
+  # Pin the shipped selector before replaying it, so this test's copy of the
+  # arithmetic cannot drift from the one CI actually runs. Dropping the "+ 1",
+  # for instance, would stop selecting a whole shard's scripts while all four
+  # shards still pass.
+  # shellcheck disable=SC2016  # single quotes are deliberate: a literal needle string, not an expansion
+  selector='[ "$(((position - 1) % SHARD_TOTAL + 1))" -eq "$SHARD_INDEX" ] || continue'
+  grep -Fq "$selector" "$CI" \
+    || fail "ci.yml's shard selector no longer matches the logic this test replays; expected: $selector"
+
+  # Replay the pinned round-robin selector over the real inventory.
+  inventory=("$ROOT"/tests/*.test.sh)
+  [ -f "${inventory[0]:-}" ] || fail "no tests/*.test.sh scripts found to shard"
   selected=""
   for index in $(seq 1 "$shard_total"); do
     position=0
-    for script in "$ROOT"/tests/*.test.sh; do
+    for script in "${inventory[@]}"; do
       position=$((position + 1))
       [ "$(((position - 1) % shard_total + 1))" -eq "$index" ] || continue
       selected="$selected$script"$'\n'
     done
   done
-  [ "$(printf '%s' "$selected" | grep -c .)" -eq "$(ls "$ROOT"/tests/*.test.sh | wc -l)" ] \
+  [ "$(printf '%s' "$selected" | grep -c .)" -eq "${#inventory[@]}" ] \
     || fail "sharded selection does not cover every tests/*.test.sh exactly once"
   [ -z "$(printf '%s' "$selected" | sort | uniq -d)" ] \
     || fail "sharded selection runs at least one script in more than one shard"
