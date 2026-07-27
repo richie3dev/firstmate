@@ -39,6 +39,11 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
+# Ship and scout scaffolds both carry a short context-discipline section: pipe
+# long command output to a file and read only the summary and grepped failures,
+# read targeted line ranges of large files, persist findings to the worktree as
+# they are made, and stop-commit-hand off rather than grinding on through a
+# mid-task compaction.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -189,6 +194,19 @@ fi
 
 REPO=${POS[1]}
 
+# Shared by ship and scout scaffolds. Deliberately short: a crewmate reads this
+# at minute one and needs it at minute ninety, so it has to survive in a window
+# that is already filling up.
+CONTEXT_SECTION=$(cat <<'EOF'
+# Context discipline
+Your context window is finite, and work done in a full one is worse than work done in a fresh one.
+1. Send long-running command output to a file (`<command> >/tmp/run.log 2>&1`), then read the tail and grep the failures - never the whole run. A full suite is thousands of tests whose useful output is a handful of lines.
+2. Read targeted line ranges of large files. A long report or source file is rarely worth reading end to end, and doing so before your real work starts can cost you the whole window.
+3. Write your findings and code map to a file in this worktree as you make them, so a compaction cannot lose them.
+4. If you approach compacting mid-task, stop instead: commit what works, write a handoff file naming what is done and what remains, append `blocked: context exhausted, handoff in {file}, relaunch me` to the status file, and stop. Firstmate relaunches you in this same worktree, where your commits and that file are waiting. Stopping is the correct move here, not a failure - grinding on in a degraded window produces worse work than handing off does.
+EOF
+)
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -257,6 +275,8 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$CONTEXT_SECTION
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -367,6 +387,8 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$CONTEXT_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

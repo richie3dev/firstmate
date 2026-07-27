@@ -136,6 +136,53 @@ test_ship_project_memory_wording() {
   pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
 }
 
+# The context-discipline section is standing guidance, not decoration: crews that
+# never got it burned whole windows on one long report or one full test run, and
+# ground on through a mid-task compaction instead of committing and handing off.
+# Both work-producing scaffolds must carry all four points.
+test_context_discipline_is_in_ship_and_scout_briefs() {
+  local home id brief kind
+  home="$TMP_ROOT/context-discipline-home"
+  mkdir -p "$home/data"
+  for kind in ship scout; do
+    id="brief-context-$kind-e1"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind: brief was not scaffolded"
+    assert_grep "# Context discipline" "$brief" "$kind brief missing the Context discipline section"
+    assert_grep "grep the failures - never the whole run" "$brief" \
+      "$kind brief lost the long-output-to-a-file rule"
+    assert_grep "Read targeted line ranges of large files" "$brief" \
+      "$kind brief lost the targeted-read rule"
+    assert_grep "so a compaction cannot lose them" "$brief" \
+      "$kind brief lost the persist-findings-as-you-go rule"
+    assert_grep "If you approach compacting mid-task, stop instead" "$brief" \
+      "$kind brief lost the stop-and-hand-off rule"
+    assert_grep "Stopping is the correct move here, not a failure" "$brief" \
+      "$kind brief lost the reassurance that makes crews willing to stop"
+  done
+  pass "fm-brief.sh: ship and scout briefs carry the context-discipline contract"
+}
+
+test_context_discipline_leaves_the_safety_contract_intact() {
+  local home brief
+  home="$TMP_ROOT/context-safety-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-context-safety-e2 some-proj >/dev/null 2>&1
+  brief="$home/data/brief-context-safety-e2/brief.md"
+  assert_grep "**Verify isolation before anything else.**" "$brief" \
+    "context-discipline section displaced the worktree-isolation assertion"
+  assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
+    "context-discipline section weakened the primary-checkout refusal"
+  assert_grep "Each append wakes firstmate, so report sparingly" "$brief" \
+    "context-discipline section displaced the status protocol"
+  pass "fm-brief.sh: context-discipline section leaves isolation and status contracts intact"
+}
+
 test_herdr_lab_contract_is_explicit_and_complete() {
   local home id brief
   home="$TMP_ROOT/herdr-lab-home"
@@ -347,6 +394,8 @@ test_ship_modes_generate_clean_briefs
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
+test_context_discipline_is_in_ship_and_scout_briefs
+test_context_discipline_leaves_the_safety_contract_intact
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
