@@ -53,7 +53,7 @@ Escalate in order:
 Step 4 governs a low context reading you merely observed, while this case is one the crewmate itself declared by appending `blocked: context exhausted` and naming a handoff, which is a request to be relaunched rather than evidence of a wedge.
 Steer it to commit what works, write that handoff naming what is done and what remains, and stop; a crewmate driving an active no-mistakes run hands off without committing, because the pipeline owns its tree.
 A scout has no commits to make and writes that handoff as a section in its report instead, which lives outside the worktree and survives teardown.
-Clear its context in place with `/clear` on a `claude` crewmate, and on every other harness use that adapter's documented exit and resume commands, rather than creating a new task.
-Re-brief it with a short pointer at its own handoff file rather than replaying the original brief.
-Reuse the same worktree, because its unlanded work is waiting there and a fresh spawn would allocate a different worktree and split one task across two copies.
-An exited `claude` crewmate prints its `--resume <session-id>` line on the way out, so relaunching with the recorded spawn flags restores that session in place.
+Shed the exhausted window rather than restoring it: send `/clear` to a `claude` crewmate in place, and on every other harness exit the agent with that adapter's exit command and launch it fresh in the same window, rather than creating a new task.
+Re-brief that empty window with a short pointer at its own handoff file rather than replaying the original brief.
+Reuse the same worktree, because its unlanded work and its handoff are waiting there and a fresh spawn would allocate a different worktree and split one task across two copies.
+Resume, such as the `--resume <session-id>` line an exited `claude` prints on the way out, belongs to a crewmate that exited with its context still healthy, not to a declared handoff.
