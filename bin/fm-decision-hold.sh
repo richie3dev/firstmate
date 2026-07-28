@@ -31,7 +31,12 @@
 # metadata inventory is unioned idempotently. A post-teardown visual review can
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
-# source before this gate has succeeded.
+# source before this gate has succeeded. A decision counts as durable while it is
+# actively held, and after it has been resolved for as long as its resolution
+# record survives - in the live backlog, or in the configured archive once
+# `done_keep` retention has moved it there. Reaching into the archive never
+# lowers the bar: an archived entry passes only when it carries the same
+# resolution record the live check demands.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
 # It writes the captain decision and routed identities into the hold body, clears
@@ -110,6 +115,21 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# hold_record <id>: the live backlog record, or the archived one once backlog
+# retention has aged the task out of `tasks-axi show`. A decision stays durable
+# for the whole life of the work it gated, which outlives `done_keep`, so a
+# lookup that reads only the live backlog reports a long-resolved decision as
+# absent and refuses cleanup forever. The live record wins whenever both exist,
+# because it is the current one.
+hold_record() {  # <id>
+  local id=$1 show
+  if show=$(task_show "$id"); then
+    printf '%s\n' "$show"
+    return 0
+  fi
+  fm_tasks_axi_archive_show "$FM_HOME" "$id"
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
@@ -170,12 +190,16 @@ verify_hold_active() {  # <hold-id>
   [ "$hold_kind" = captain ] || fail "backlog item $id is not held for the captain"
 }
 
-verify_hold_resolved() {  # <hold-id>
-  local id=$1 show state kind body
-  show=$(task_show "$id") || return 1
-  state=$(show_field "$show" state)
-  kind=$(show_field "$show" kind)
-  body=$(show_field "$show" body)
+# The durable resolution shape: closed as a captain decision, carrying the
+# resolution record this script writes on the way to Done. Presence alone is
+# never enough, in the live backlog or in the archive - a captain hold closed
+# by any other route keeps the unanswered body it was created with, and a
+# decision that was never answered must still refuse.
+resolved_record() {  # <record>
+  local record=$1 state kind body
+  state=$(show_field "$record" state)
+  kind=$(show_field "$record" kind)
+  body=$(show_field "$record" body)
   [ "$state" = "done" ] || return 1
   [ "$kind" = captain ] || return 1
   case "$body" in
@@ -184,22 +208,24 @@ verify_hold_resolved() {  # <hold-id>
   return 1
 }
 
+verify_hold_resolved() {  # <hold-id>
+  local record
+  record=$(hold_record "$1") || return 1
+  resolved_record "$record"
+}
+
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
-  kind=$(show_field "$show" kind)
-  hold_kind=$(show_field "$show" hold_kind)
-  body=$(show_field "$show" body)
+  local id=$1 record state held kind hold_kind
+  record=$(hold_record "$id") \
+    || fail "captain decision $id is absent from the $FM_HOME backlog and its archive"
+  state=$(show_field "$record" state)
+  held=$(show_field "$record" held)
+  kind=$(show_field "$record" kind)
+  hold_kind=$(show_field "$record" hold_kind)
   if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
     return 0
   fi
-  if [ "$state" = "done" ] && [ "$kind" = captain ]; then
-    case "$body" in
-      *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
-    esac
-  fi
+  resolved_record "$record" && return 0
   fail "captain decision $id is neither actively held nor durably resolved"
 }
 
@@ -394,7 +420,7 @@ command_resolve() {
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   if verify_hold_resolved "$id"; then
-    hold_show=$(task_show "$id")
+    hold_show=$(hold_record "$id")
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
     printf 'resolved: %s\n' "$id"

@@ -23,6 +23,11 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
+A decision outlives the live backlog it was filed in.
+`done_keep` retention moves a closed hold into the configured archive, and `tasks-axi show` cannot reach it there, so a lookup confined to the live backlog reports every long-resolved decision as absent and refuses the originating investigation's cleanup permanently.
+The script therefore reads the live record first and falls back to the archived one through `fm_tasks_axi_archive_show` in `bin/fm-tasks-axi-lib.sh`, which resolves the archive path from the home's own `.tasks.toml` and renders the entry in the same field shape `tasks-axi show --full` prints.
+The archive is a wider view and never a lower bar: an archived entry passes only by carrying the same resolution record the live check demands, so a decision that was never registered, one that is still open, and one closed outside `resolve` all still refuse.
+
 The `resolve` subcommand requires a decision file and at least one existing dependent task whose structured `blocked-by` edge points to the hold.
 It records the decision digest and routed task identities as a retry identity in the hold body, clears each dependency edge through tasks-axi, and marks the hold Done only after those writes succeed.
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
@@ -83,4 +88,45 @@ $ git diff --check
 
 $ for test_script in tests/*.test.sh; do bash "$test_script"; done
 ALL 71 TEST SCRIPTS PASSED
+```
+
+## Archived-resolution regression evidence
+
+Verification date: 2026-07-28, tasks-axi 0.2.2.
+
+The refusal was first observed on a real completed investigation whose five captain decisions had all been closed and then aged out of the live backlog by `done_keep = 10`.
+The gate reported the first of them as absent, so cleanup could never run again.
+
+Four of those five were resolved through `resolve` and pass once the lookup reaches the archive.
+The fifth was closed with a plain `tasks-axi done` and its archived body still reads `State: awaiting captain decision.`, so the captain never answered it and the gate correctly keeps refusing.
+That distinction is the point of the change and is pinned by its own regression: a closed captain hold is not an answered one, and reaching into the archive must not make it look like one.
+
+With the three added regressions reverted to the pre-fix lookup, the first one reproduces the reported failure exactly.
+
+```text
+$ git stash push -- bin/fm-decision-hold.sh bin/fm-tasks-axi-lib.sh
+$ bash tests/fm-decision-hold-lifecycle.test.sh
+...
+not ok - archived resolution failed the completion gate: fm-decision-hold: captain decision
+sample-retention-review-decision-route is absent from
+/tmp/fm-decision-hold.magWD9/archived-resolution/data/backlog.md
+
+$ git stash pop
+$ bash tests/fm-decision-hold-lifecycle.test.sh
+ok - report-only unresolved decision is reproduced and completion refuses before loss
+ok - non-forced scout teardown always requires durable inventory verification
+ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
+ok - completion and verification validate origins before constructing paths
+ok - ended visual review follows the same decision-hold completion owner
+ok - resolved findings and decision-like prose do not create false holds
+ok - terminal single-owner stale status decisions do not block empty inventory
+ok - main-home and secondmate-home captain holds remain correctly routed
+ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - a resolved decision keeps passing the completion gate after retention archives it
+ok - the durable-decision lookup reads the archive the home actually configured
+ok - unregistered and still-open archived decisions both still refuse
+ok - an archived decision closed without an answer still refuses cleanup
+
+$ bin/fm-lint.sh
+fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0) at /home/dev/.cache/firstmate/shellcheck/0.11.0/shellcheck
 ```

@@ -455,6 +455,183 @@ EOF
   pass "main-home and secondmate-home captain holds remain correctly routed"
 }
 
+# Reproduces the permanent cleanup refusal: an investigation whose captain
+# decision was answered and resolved, and then aged out of the live backlog by
+# `done_keep` retention. The durably-resolved branch of the completion gate used
+# to be reachable only through the live backlog, so a finished investigation
+# became more certainly unclearable the longer its decisions had been settled.
+seed_resolved_investigation() {  # <home> <origin-id>
+  local home=$1 origin=$2 hold dep
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Investigate sample retention" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create retention investigation fixture"
+  write_origin_meta "$home" "$origin"
+  printf 'needs-decision [key=route]: choose route north or route south\ndone: report complete\n' \
+    > "$home/state/$origin.status"
+  printf '# Sample retention review\n\nOne captain choice was surfaced and answered.\n' \
+    > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose the sample route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the retention route hold"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "completion gate failed while the decision was held"
+  dep="$origin-implementation"
+  tasks_in "$home" add "$dep" "Apply the selected sample route" --kind ship --repo sample \
+    --blocked-by "$hold" >/dev/null || fail "could not route dependent work behind the hold"
+  printf 'Use route north for the sample system.\n' > "$home/$origin-decision.txt"
+  run_decisions "$home" resolve "$origin" route --decision-file "$home/$origin-decision.txt" \
+    --routed-to "$dep" >/dev/null || fail "could not resolve the retention captain decision"
+  printf '%s\n' "$hold"
+}
+
+test_archived_resolution_still_passes_the_completion_gate() {
+  local home origin hold
+  home=$(make_home archived-resolution)
+  origin=sample-retention-review
+  hold=$(seed_resolved_investigation "$home" "$origin")
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "verification failed while the resolution was still in the live backlog"
+
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  ! grep -F "$hold" "$home/data/backlog.md" >/dev/null \
+    || fail "retention fixture left the resolved decision in the live backlog"
+  grep -F "$hold" "$home/data/done-archive.md" >/dev/null \
+    || fail "retention fixture did not archive the resolved decision"
+
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/archived-verify.err" \
+    || fail "archived resolution failed the completion gate: $(cat "$home/archived-verify.err")"
+  run_decisions "$home" resolve "$origin" route --decision-file "$home/$origin-decision.txt" \
+    --routed-to "$origin-implementation" >/dev/null 2> "$home/archived-resolve.err" \
+    || fail "resolution retry stopped being idempotent after archival: $(cat "$home/archived-resolve.err")"
+  run_teardown "$home" "$origin" >/dev/null 2> "$home/archived-teardown.err" \
+    || fail "archived resolution blocked investigation cleanup: $(cat "$home/archived-teardown.err")"
+  assert_absent "$home/state/$origin.meta" "cleared investigation kept its durable record"
+  pass "a resolved decision keeps passing the completion gate after retention archives it"
+}
+
+# The archive path is a per-home configuration choice. Reading a hard-coded
+# data/done-archive.md would silently do nothing for a home that configured
+# another path, which is the same defect wearing a different hat.
+test_archive_lookup_follows_the_configured_archive_path() {
+  local home origin hold
+  home=$(make_home configured-archive-path)
+  cat > "$home/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "data/decision-archive.md"
+done_keep = 10
+EOF
+  origin=sample-configured-archive-review
+  hold=$(seed_resolved_investigation "$home" "$origin")
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  grep -F "$hold" "$home/data/decision-archive.md" >/dev/null \
+    || fail "retention fixture did not use the configured archive path"
+  [ ! -e "$home/data/done-archive.md" ] || fail "fixture wrote the default archive path"
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/configured-verify.err" \
+    || fail "completion gate ignored the configured archive: $(cat "$home/configured-verify.err")"
+  pass "the durable-decision lookup reads the archive the home actually configured"
+}
+
+# The archive is a wider view, never a lower bar. Each of these is a decision the
+# gate must still refuse, and all three are indistinguishable from a resolved one
+# unless the archived record itself is inspected.
+test_archive_lookup_refuses_unregistered_open_and_unresolved_decisions() {
+  local home origin hold
+  home=$(make_home unregistered-decision)
+  origin=sample-ghost-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Ghost decision review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create ghost-decision origin"
+  write_origin_meta "$home" "$origin"
+  printf 'decisions_reviewed=1\ndecision_keys=ghost\n' >> "$home/state/$origin.meta"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Ghost review\n\nThe inventory names a decision that was never registered.\n' \
+    > "$home/data/$origin/report.md"
+  if run_decisions "$home" verify "$origin" > "$home/ghost.out" 2> "$home/ghost.err"; then
+    fail "verification accepted a decision key with no backlog record anywhere"
+  fi
+  assert_grep "is absent from" "$home/ghost.err" "an unregistered decision must refuse as absent"
+  if run_teardown "$home" "$origin" >/dev/null 2> "$home/ghost-teardown.err"; then
+    fail "cleanup erased an investigation whose decision was never registered"
+  fi
+  assert_present "$home/state/$origin.meta" "refused cleanup removed investigation metadata"
+
+  home=$(make_home archived-open-decision)
+  origin=sample-archived-open-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Archived open decision review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived-open origin"
+  write_origin_meta "$home" "$origin"
+  printf 'decisions_reviewed=1\ndecision_keys=open\n' >> "$home/state/$origin.meta"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Archived open review\n\nAn unanswered decision was filed into the archive.\n' \
+    > "$home/data/$origin/report.md"
+  cat > "$home/data/done-archive.md" <<EOF
+
+## Archived 2026-07-14
+- [ ] $origin-decision-open - Choose the sample gauge (repo: sample) (kind: captain) (hold-kind: captain)
+  Origin: $origin
+  Decision key: open
+  State: awaiting captain decision.
+EOF
+  if run_decisions "$home" verify "$origin" > "$home/open.out" 2> "$home/open.err"; then
+    fail "verification accepted a still-open decision parked in the archive"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/open.err" \
+    "an open archived decision must refuse as unresolved"
+
+  pass "unregistered and still-open archived decisions both still refuse"
+}
+
+# A closed captain hold is not an answered one. A decision closed with a plain
+# `tasks-axi done` keeps the unanswered body it was created with, and retention
+# then archives it looking exactly like a resolved decision from the outside.
+# Widening the lookup to the archive must not turn that into a pass: the captain
+# never answered, so the investigation that surfaced it must stay parked.
+test_archived_unanswered_decision_still_refuses() {
+  local home origin hold record
+  home=$(make_home archived-unanswered-decision)
+  origin=sample-archived-closed-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Archived closed decision review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived-closed origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Archived closed review\n\nThe decision was closed outside the durable path.\n' \
+    > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" gauge \
+    --title "Choose the sample gauge" --reason "captain gauge choice pending" --repo sample) \
+    || fail "could not register the gauge hold"
+  run_decisions "$home" complete "$origin" gauge >/dev/null \
+    || fail "completion gate failed while the gauge decision was held"
+
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the hold outside the durable path"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  grep -F "$hold" "$home/data/done-archive.md" >/dev/null \
+    || fail "fixture did not archive the bypassed hold"
+  record=$(bash -c '. "$1"; fm_tasks_axi_archive_show "$2" "$3"' _ \
+    "$ROOT/bin/fm-tasks-axi-lib.sh" "$home" "$hold") \
+    || fail "the archived bypassed hold could not be read back"
+  assert_contains "$record" "state: done" "the bypassed hold must archive as closed"
+  assert_contains "$record" "State: awaiting captain decision." \
+    "the bypassed hold must keep its unanswered body, which is what the gate reads"
+
+  if run_decisions "$home" verify "$origin" > "$home/closed.out" 2> "$home/closed.err"; then
+    fail "verification accepted an archived decision the captain never answered"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/closed.err" \
+    "an archived decision without the resolution record must refuse"
+  if run_teardown "$home" "$origin" >/dev/null 2> "$home/closed-teardown.err"; then
+    fail "cleanup erased an investigation whose decision the captain never answered"
+  fi
+  assert_grep "REFUSED" "$home/closed-teardown.err" "the cleanup refusal must be explicit"
+  assert_present "$home/state/$origin.meta" "refused cleanup removed investigation metadata"
+  assert_present "$home/data/$origin/report.md" "refused cleanup removed the investigation report"
+  pass "an archived decision closed without an answer still refuses cleanup"
+}
+
 # tasks-axi quotes multi-entry blocked_by values as "a,b,c". resolve must strip
 # those surrounding quotes before comma-boundary membership so the first and last
 # list elements match, not only middle elements.
@@ -560,3 +737,7 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
+test_archived_resolution_still_passes_the_completion_gate
+test_archive_lookup_follows_the_configured_archive_path
+test_archive_lookup_refuses_unregistered_open_and_unresolved_decisions
+test_archived_unanswered_decision_still_refuses
