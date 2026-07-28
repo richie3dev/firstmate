@@ -20,9 +20,10 @@
 #   fm_tasks_axi_archive_show <home> <id>  -> show-shaped record, or 1
 # `fm_tasks_axi_archive_show` renders the most recently archived entry for the
 # id in the same field shape `tasks-axi show <id> --full` prints, so callers
-# parse one format. It emits only the fields the archive preserves - id, state,
-# kind, and body - because hold metadata is not recoverable from an archived
-# entry; a caller that requires `held` must treat its absence as not held.
+# parse one format. It emits only the fields the archive preserves - id, title,
+# state, kind, repo, and body - because hold metadata is not recoverable from an
+# archived entry; a caller that requires `held` must treat its absence as not
+# held.
 
 fm_tasks_axi_version_parts() {
   local output
@@ -88,22 +89,68 @@ fm_tasks_axi_backend_available() {
   fm_tasks_axi_compatible
 }
 
-# Print the archive path configured for <home>, resolved the same way tasks-axi
-# resolves it: from the home's own .tasks.toml, relative to the home. Returns 1
-# when the home has no config, selects a non-markdown backend, or configures no
-# archive, so callers never assume a default path a home may not use.
-fm_tasks_axi_archive_path() {
-  local home=$1 config="$1/.tasks.toml" backend archive
-  [ -f "$config" ] || return 1
-  backend=$(sed -n 's/^[[:space:]]*backend[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$config" | head -1)
-  [ -z "$backend" ] || [ "$backend" = markdown ] || return 1
-  archive=$(awk '
-    /^[[:space:]]*\[/ { section = $0; next }
-    section ~ /\[markdown\]/ && /^[[:space:]]*archive[[:space:]]*=/ {
-      if (match($0, /"[^"]*"/)) { print substr($0, RSTART + 1, RLENGTH - 2); exit }
+# Print a TOML string value from <config>. <section> is the bare table name the
+# key must sit under, or empty for the top-level table. Both double-quoted and
+# literal single-quoted strings are accepted: tasks-axi honours either, so a
+# value it acts on must never read as absent here.
+fm_toml_string() {  # <config> <section> <key>
+  awk -v want_section="$2" -v want_key="$3" '
+    BEGIN { section = ""; q = sprintf("%c", 39) }
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[[[:space:]]*/, "", section)
+      sub(/[[:space:]]*\].*$/, "", section)
+      next
     }
-  ' "$config")
-  [ -n "$archive" ] || return 1
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (section != want_section) next
+      if (index(line, want_key) != 1) next
+      rest = substr(line, length(want_key) + 1)
+      if (rest !~ /^[[:space:]]*=/) next
+      sub(/^[[:space:]]*=[[:space:]]*/, "", rest)
+      if (match(rest, "^\"[^\"]*\"") || match(rest, "^" q "[^" q "]*" q)) {
+        print substr(rest, 2, RLENGTH - 2)
+        exit
+      }
+    }
+  ' "$1"
+}
+
+# Print the archive path <home> archives into, resolved the way tasks-axi
+# resolves it: per key from the home's own .tasks.toml first and the captain's
+# ~/.tasks-axi/config.toml second, relative to the home. tasks-axi does not walk
+# up to a parent config, so a home without either still archives - into the
+# tool's own default, `done-archive.md` beside whichever backlog it discovers -
+# and that default is reproduced here rather than read as "this home has no
+# archive", which would silently refuse every decision the home ever settled.
+# Returns 1 only for a non-markdown backend, which has no archive file to read.
+fm_tasks_axi_archive_path() {
+  local home=$1 backend='' archive='' path='' config candidate base
+  for config in "$1/.tasks.toml" "${HOME:-}/.tasks-axi/config.toml"; do
+    [ -f "$config" ] || continue
+    [ -n "$backend" ] || backend=$(fm_toml_string "$config" '' backend)
+    [ -n "$archive" ] || archive=$(fm_toml_string "$config" markdown archive)
+    [ -n "$path" ] || path=$(fm_toml_string "$config" markdown path)
+  done
+  [ -z "$backend" ] || [ "$backend" = markdown ] || return 1
+  if [ -z "$archive" ]; then
+    base=$path
+    if [ -z "$base" ]; then
+      base=backlog.md
+      for candidate in backlog.md data/backlog.md; do
+        if [ -e "$home/$candidate" ]; then
+          base=$candidate
+          break
+        fi
+      done
+    fi
+    case "$base" in
+      */*) archive="${base%/*}/done-archive.md" ;;
+      *) archive=done-archive.md ;;
+    esac
+  fi
   case "$archive" in
     /*) printf '%s\n' "$archive" ;;
     *) printf '%s/%s\n' "$home" "$archive" ;;
@@ -131,8 +178,10 @@ fm_tasks_axi_archive_show() {
       }
       return out
     }
-    # Entry header: "- [x] <id> - <title> (kind: <kind>) ...". The checkbox is
-    # the only state the archive records; hold metadata is not preserved.
+    # Entry header: "- [x] <id> - <title> (repo: <repo>) (kind: <kind>) ...".
+    # The checkbox is the only state the archive records; hold metadata is not
+    # preserved. The title is whatever is left once the trailing parenthesised
+    # metadata groups are peeled off, so a title of its own may contain "(...)".
     /^- \[[ x]\] / {
       collecting = 0
       rest = substr($0, 7)
@@ -144,6 +193,14 @@ fm_tasks_axi_archive_show() {
       state = (substr($0, 4, 1) == "x") ? "done" : "queued"
       kind = ""
       if (match(rest, /\(kind: [^)]*\)/)) kind = substr(rest, RSTART + 7, RLENGTH - 8)
+      repo = ""
+      if (match(rest, /\(repo: [^)]*\)/)) repo = substr(rest, RSTART + 7, RLENGTH - 8)
+      title = (sep ? substr(rest, sep + 3) : "")
+      gsub(/ blocked-by: [^ )]+/, "", title)
+      while (match(title, / \((repo|kind|priority|hold-kind|hold):[^)]*\)$/) ||
+             match(title, / \((since|done|merged|reported|closed)[[:space:]][^)]*\)$/))
+        title = substr(title, 1, RSTART - 1)
+      sub(/[[:space:]]+$/, "", title)
       body = ""
       next
     }
@@ -156,7 +213,8 @@ fm_tasks_axi_archive_show() {
     END {
       if (!found) exit 1
       sub(/\n+$/, "", body)
-      printf "task:\n  id: %s\n  state: %s\n  kind: %s\n  body: \"%s\"\n", want, state, kind, esc(body)
+      printf "task:\n  id: %s\n  title: %s\n  state: %s\n  kind: %s\n  repo: %s\n  body: \"%s\"\n",
+        want, title, state, kind, repo, esc(body)
     }
   ' "$archive"
 }

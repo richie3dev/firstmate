@@ -36,12 +36,14 @@
 # record survives - in the live backlog, or in the configured archive once
 # `done_keep` retention has moved it there. Reaching into the archive never
 # lowers the bar: an archived entry passes only when it carries the same
-# resolution record the live check demands.
+# resolution record the live check demands, answered for the origin asking.
 #
 # `resolve` requires every --routed-to task to exist and to be blocked by the hold.
-# It writes the captain decision and routed identities into the hold body, clears
-# those dependency edges, and only then marks the hold Done. A failure before the
-# final step leaves the captain hold open.
+# It writes the origin, captain decision and routed identities into the hold body,
+# clears those dependency edges, and only then marks the hold Done. A failure
+# before the final step leaves the captain hold open. A hold retention has already
+# archived is restored into the live backlog first, so an answer stays recordable
+# for as long as the decision matters rather than only until `done_keep` expires.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -135,6 +137,50 @@ show_field() {  # <show-output> <field>
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
 }
 
+# A record's body without the quotes tasks-axi wraps it in. The value stays the
+# single escaped line tasks-axi prints, so \n is two characters here.
+show_body() {  # <record>
+  local body
+  body=$(show_field "$1" body)
+  body=${body#\"}
+  printf '%s' "${body%\"}"
+}
+
+# The structured header this script writes above the captain's own prose. Field
+# lookups stay inside it so decision text that happens to start a line with a
+# field label is never read as one of this script's own fields.
+body_header() {  # <body>
+  local body=$1
+  case "$body" in
+    *'\n\nCaptain decision:'*) printf '%s' "${body%%\\n\\nCaptain decision:*}" ;;
+    *) printf '%s' "$body" ;;
+  esac
+}
+
+body_field() {  # <body> <label>
+  local header rest
+  header=$(body_header "$1")
+  case "$header" in
+    "$2: "*) rest=${header#"$2: "} ;;
+    *"\\n$2: "*) rest=${header#*"\\n$2: "} ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${rest%%\\n*}"
+}
+
+# A hold identity is composed as <origin-id>-decision-<decision-key>, which two
+# different investigations can compose to the same string, so identity alone
+# does not prove a record answers for the origin asking. Provenance is matched
+# whenever the record names one and is never required: every record written
+# before this script recorded origins names none, and refusing those would make
+# each already-resolved decision start refusing again.
+origin_matches() {  # <body> <origin-id>
+  local recorded
+  recorded=$(body_field "$1" Origin) || return 0
+  [ -n "$2" ] || return 0
+  [ "$recorded" = "$2" ]
+}
+
 origin_exists_here() {  # <origin-id>
   [ -f "$STATE/$1.meta" ] && return 0
   [ -f "$DATA/$1/report.md" ] && return 0
@@ -179,7 +225,7 @@ origin_open_decisions() {  # <origin-id>
 
 verify_hold_active() {  # <hold-id>
   local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain hold $id is absent from the $FM_HOME backlog"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -191,31 +237,32 @@ verify_hold_active() {  # <hold-id>
 }
 
 # The durable resolution shape: closed as a captain decision, carrying the
-# resolution record this script writes on the way to Done. Presence alone is
-# never enough, in the live backlog or in the archive - a captain hold closed
-# by any other route keeps the unanswered body it was created with, and a
-# decision that was never answered must still refuse.
-resolved_record() {  # <record>
-  local record=$1 state kind body
+# resolution record this script writes on the way to Done, answered for the
+# origin asking. Presence alone is never enough, in the live backlog or in the
+# archive - a captain hold closed by any other route keeps the unanswered body
+# it was created with, and a decision that was never answered must still refuse.
+resolved_record() {  # <record> [origin-id]
+  local record=$1 origin=${2:-} state kind body
   state=$(show_field "$record" state)
   kind=$(show_field "$record" kind)
-  body=$(show_field "$record" body)
+  body=$(show_body "$record")
   [ "$state" = "done" ] || return 1
   [ "$kind" = captain ] || return 1
   case "$body" in
-    *"Resolution recorded by fm-decision-hold."*"Routed work:"*) return 0 ;;
+    *"Resolution recorded by fm-decision-hold."*"Routed work:"*) : ;;
+    *) return 1 ;;
   esac
-  return 1
+  origin_matches "$body" "$origin"
 }
 
-verify_hold_resolved() {  # <hold-id>
+verify_hold_resolved() {  # <hold-id> <origin-id>
   local record
   record=$(hold_record "$1") || return 1
-  resolved_record "$record"
+  resolved_record "$record" "$2"
 }
 
-verify_hold_durable() {  # <hold-id>
-  local id=$1 record state held kind hold_kind
+verify_hold_durable() {  # <hold-id> <origin-id>
+  local id=$1 origin=$2 record state held kind hold_kind
   record=$(hold_record "$id") \
     || fail "captain decision $id is absent from the $FM_HOME backlog and its archive"
   state=$(show_field "$record" state)
@@ -223,30 +270,65 @@ verify_hold_durable() {  # <hold-id>
   kind=$(show_field "$record" kind)
   hold_kind=$(show_field "$record" hold_kind)
   if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+    if origin_matches "$(show_body "$record")" "$origin"; then
+      return 0
+    fi
+    fail "captain decision $id is held for another origin"
+  fi
+  if resolved_record "$record" "$origin"; then
     return 0
   fi
-  resolved_record "$record" && return 0
+  if resolved_record "$record"; then
+    fail "captain decision $id carries a resolution answered for another origin"
+  fi
   fail "captain decision $id is neither actively held nor durably resolved"
 }
 
 verify_resolution_identity() {
-  local id=$1 hold_body=$2 decision_digest=$3 routed_csv=$4 resolution_prefix resolution_fields recorded_digest recorded_routes
-  resolution_prefix='"Resolution recorded by fm-decision-hold.\nDecision digest: '
+  local id=$1 hold_body=$2 decision_digest=$3 routed_csv=$4 recorded_digest recorded_routes
   case "$hold_body" in
-    "$resolution_prefix"*) resolution_fields=${hold_body#"$resolution_prefix"} ;;
+    'Resolution recorded by fm-decision-hold.'*) : ;;
     *) fail "captain hold $id has no retry identity record" ;;
   esac
-  case "$resolution_fields" in
-    *'\nRouted identities: '*'\n\nCaptain decision:'*) : ;;
+  case "$hold_body" in
+    *'\n\nCaptain decision:'*) : ;;
     *) fail "captain hold $id has an invalid retry identity record" ;;
   esac
-  recorded_digest=${resolution_fields%%\\n*}
-  resolution_fields=${resolution_fields#*\\nRouted identities: }
-  recorded_routes=${resolution_fields%%\\n*}
+  recorded_digest=$(body_field "$hold_body" 'Decision digest') \
+    || fail "captain hold $id has an invalid retry identity record"
+  recorded_routes=$(body_field "$hold_body" 'Routed identities') \
+    || fail "captain hold $id has an invalid retry identity record"
   [ "$recorded_digest" = "$decision_digest" ] \
     || fail "captain hold $id records a different captain decision"
   [ "$recorded_routes" = "$routed_csv" ] \
     || fail "captain hold $id records different routed work"
+}
+
+# Bring an archived captain hold back into the live backlog so the captain's
+# answer can still be recorded against it. Retention archives a hold once it is
+# closed and tasks-axi cannot write into the archive, so an answer to a decision
+# that has aged out would otherwise be permanently unrecordable - and re-running
+# `hold` cannot recover it either once the origin's own state is gone. The
+# restored item keeps the archived title and repo and gets the same unanswered
+# body a fresh hold gets, because the archived body is either that same
+# unanswered text or another investigation's answer, which is never inherited.
+restore_archived_hold() {  # <origin-id> <decision-key> <hold-id>
+  local origin=$1 key=$2 id=$3 record title repo body
+  record=$(fm_tasks_axi_archive_show "$FM_HOME" "$id") \
+    || fail "captain hold $id is absent from the $FM_HOME backlog and its archive"
+  [ "$(show_field "$record" kind)" = captain ] \
+    || fail "archived backlog item $id is not kind captain"
+  origin_matches "$(show_body "$record")" "$origin" \
+    || fail "archived captain hold $id was filed for another origin"
+  title=$(show_field "$record" title)
+  [ -n "$title" ] || fail "archived captain hold $id has no title to restore"
+  repo=$(show_field "$record" repo)
+  [ -n "$repo" ] || repo=firstmate
+  body=$(printf 'Origin: %s\nDecision key: %s\nState: awaiting captain decision.' "$origin" "$key")
+  tasks_axi add "$id" "$title" --kind captain --repo "$repo" --body "$body" >/dev/null \
+    || fail "could not restore archived captain hold $id"
+  tasks_axi hold "$id" --reason "captain decision restored from the archive" --kind captain >/dev/null \
+    || fail "could not reactivate restored captain hold $id"
 }
 
 command_id() {
@@ -326,7 +408,7 @@ command_complete() {
   if [ -n "$keys" ]; then
     while IFS= read -r key; do
       [ -n "$key" ] || continue
-      verify_hold_durable "$(hold_id "$origin" "$key")"
+      verify_hold_durable "$(hold_id "$origin" "$key")" "$origin"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
@@ -376,7 +458,7 @@ command_verify() {
   if [ -n "$keys" ]; then
     while IFS= read -r key; do
       [ -n "$key" ] || continue
-      verify_hold_durable "$(hold_id "$origin" "$key")"
+      verify_hold_durable "$(hold_id "$origin" "$key")" "$origin"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
@@ -386,7 +468,7 @@ EOF
     [ -n "$key" ] || continue
     list_has_key "$keys" "$key" \
       || fail "open structured decision $origin/$key is outside the reviewed inventory"
-    verify_hold_durable "$(hold_id "$origin" "$key")"
+    verify_hold_durable "$(hold_id "$origin" "$key")" "$origin"
   done <<EOF
 $open
 EOF
@@ -419,18 +501,23 @@ command_resolve() {
   decision_digest=$(sha256_text "$decision")
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  if verify_hold_resolved "$id"; then
+  if verify_hold_resolved "$id" "$origin"; then
     hold_show=$(hold_record "$id")
-    hold_body=$(show_field "$hold_show" body)
+    hold_body=$(show_body "$hold_show")
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
     printf 'resolved: %s\n' "$id"
     return 0
   fi
+  if ! task_show "$id" >/dev/null; then
+    restore_archived_hold "$origin" "$key" "$id"
+  fi
   verify_hold_active "$id"
   hold_show=$(task_show "$id")
-  hold_body=$(show_field "$hold_show" body)
+  hold_body=$(show_body "$hold_show")
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
+      origin_matches "$hold_body" "$origin" \
+        || fail "captain hold $id records a resolution answered for another origin"
       verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
       resolution_recorded=1
       ;;
@@ -456,7 +543,7 @@ command_resolve() {
     esac
   done
 
-  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$decision_digest" "$routed_csv" "$decision")
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nOrigin: %s\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$origin" "$decision_digest" "$routed_csv" "$decision")
   for dep in $routed; do
     body="${body}- ${dep}"$'\n'
   done
@@ -475,7 +562,8 @@ command_resolve() {
     esac
   done
   tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
-  verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
+  verify_hold_resolved "$id" "$origin" \
+    || fail "captain hold $id did not retain its durable resolution record"
   printf 'resolved: %s -> %s\n' "$id" "$routed"
 }
 

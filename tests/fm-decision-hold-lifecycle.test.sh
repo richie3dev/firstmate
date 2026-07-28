@@ -585,6 +585,26 @@ EOF
   pass "unregistered and still-open archived decisions both still refuse"
 }
 
+# An inventoried captain decision the captain never answered. The caller closes
+# it with a plain `tasks-axi done`, which keeps the unanswered body the hold was
+# created with, and archives it.
+seed_unanswered_decision() {  # <home> <origin-id> <decision-key>
+  local home=$1 origin=$2 key=$3 hold
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Unanswered decision review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the unanswered-decision origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Unanswered decision review\n\nThe decision was closed outside the durable path.\n' \
+    > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" "$key" \
+    --title "Choose the sample $key" --reason "captain $key choice pending" --repo sample) \
+    || fail "could not register the $key hold"
+  run_decisions "$home" complete "$origin" "$key" >/dev/null \
+    || fail "completion gate failed while the $key decision was held"
+  printf '%s\n' "$hold"
+}
+
 # A closed captain hold is not an answered one. A decision closed with a plain
 # `tasks-axi done` keeps the unanswered body it was created with, and retention
 # then archives it looking exactly like a resolved decision from the outside.
@@ -594,18 +614,7 @@ test_archived_unanswered_decision_still_refuses() {
   local home origin hold record
   home=$(make_home archived-unanswered-decision)
   origin=sample-archived-closed-review
-  mkdir -p "$home/data/$origin"
-  tasks_in "$home" add "$origin" "Archived closed decision review" --kind scout --repo sample --start >/dev/null \
-    || fail "could not create archived-closed origin"
-  write_origin_meta "$home" "$origin"
-  printf 'done: report complete\n' > "$home/state/$origin.status"
-  printf '# Archived closed review\n\nThe decision was closed outside the durable path.\n' \
-    > "$home/data/$origin/report.md"
-  hold=$(run_decisions "$home" hold "$origin" gauge \
-    --title "Choose the sample gauge" --reason "captain gauge choice pending" --repo sample) \
-    || fail "could not register the gauge hold"
-  run_decisions "$home" complete "$origin" gauge >/dev/null \
-    || fail "completion gate failed while the gauge decision was held"
+  hold=$(seed_unanswered_decision "$home" "$origin" gauge)
 
   tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the hold outside the durable path"
   tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
@@ -727,6 +736,193 @@ test_resolve_matches_quoted_blocked_by_edges() {
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
 
+# A hold identity is composed as <origin-id>-decision-<decision-key>, and two
+# investigations can compose the same string, so the identity alone never proves
+# a record answers for the origin asking. Reaching into the archive would
+# otherwise hand one investigation's settled answer to another and let teardown
+# erase a source whose own captain decision is genuinely unanswered.
+test_a_resolution_answers_only_the_origin_it_names() {
+  local home first second hold other_hold dep
+  home=$(make_home borrowed-resolution)
+  first=sample-shared-review
+  second=sample-shared-review-decision-route
+  hold="$first-decision-route-decision-north"
+  [ "$(run_decisions "$home" id "$first" route-decision-north)" = "$hold" ] \
+    || fail "the first investigation's hold identity was not the fixture identity"
+  [ "$(run_decisions "$home" id "$second" north)" = "$hold" ] \
+    || fail "the fixture investigations do not compose the same hold identity"
+
+  mkdir -p "$home/data/$first"
+  tasks_in "$home" add "$first" "Shared identity review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the answering investigation"
+  write_origin_meta "$home" "$first"
+  printf 'done: report complete\n' > "$home/state/$first.status"
+  printf '# Shared identity review\n\nThe captain answered this one.\n' > "$home/data/$first/report.md"
+  other_hold=$(run_decisions "$home" hold "$first" route-decision-north \
+    --title "Choose the shared sample route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the answering hold"
+  [ "$other_hold" = "$hold" ] || fail "the registered hold left the fixture identity: $other_hold"
+  run_decisions "$home" complete "$first" route-decision-north >/dev/null \
+    || fail "completion gate failed while the shared decision was held"
+  dep="$first-implementation"
+  tasks_in "$home" add "$dep" "Apply the shared sample route" --kind ship --repo sample \
+    --blocked-by "$hold" >/dev/null || fail "could not route dependent work behind the shared hold"
+  printf 'Use route north for the shared sample system.\n' > "$home/shared-decision.txt"
+  run_decisions "$home" resolve "$first" route-decision-north \
+    --decision-file "$home/shared-decision.txt" --routed-to "$dep" >/dev/null \
+    || fail "could not resolve the answering investigation's decision"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  grep -F "Origin: $first" "$home/data/done-archive.md" >/dev/null \
+    || fail "the archived resolution did not record the origin it answered for"
+
+  mkdir -p "$home/data/$second"
+  tasks_in "$home" add "$second" "Borrowing identity review" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the borrowing investigation"
+  write_origin_meta "$home" "$second"
+  printf 'done: report complete\n' > "$home/state/$second.status"
+  printf '# Borrowing identity review\n\nThis captain decision was never answered.\n' \
+    > "$home/data/$second/report.md"
+  if run_decisions "$home" complete "$second" north > "$home/borrowed.out" 2> "$home/borrowed.err"; then
+    fail "completion inherited another investigation's archived answer"
+  fi
+  assert_grep "answered for another origin" "$home/borrowed.err" \
+    "a borrowed resolution must refuse by naming the provenance mismatch"
+  assert_no_grep "decisions_reviewed=1" "$home/state/$second.meta" \
+    "refused completion recorded a false completion attestation"
+
+  printf 'decisions_reviewed=1\ndecision_keys=north\n' >> "$home/state/$second.meta"
+  if run_decisions "$home" verify "$second" > "$home/borrowed-verify.out" 2> "$home/borrowed-verify.err"; then
+    fail "verification inherited another investigation's archived answer"
+  fi
+  assert_grep "answered for another origin" "$home/borrowed-verify.err" \
+    "a borrowed resolution must refuse verification too"
+  if run_teardown "$home" "$second" >/dev/null 2> "$home/borrowed-teardown.err"; then
+    fail "cleanup erased a source whose captain decision was answered for another origin"
+  fi
+  assert_grep "REFUSED" "$home/borrowed-teardown.err" "the cleanup refusal must be explicit"
+  assert_present "$home/state/$second.meta" "refused cleanup removed investigation metadata"
+  pass "an archived resolution answers only the origin it names"
+}
+
+# Every resolution recorded before origins were written carries no origin line.
+# Requiring one would make each already-resolved decision start refusing, which
+# is the permanent refusal this lookup exists to end, so a record that names no
+# origin must keep passing.
+test_a_resolution_without_a_recorded_origin_still_passes() {
+  local home origin hold archive
+  home=$(make_home originless-resolution)
+  origin=sample-legacy-resolution-review
+  hold=$(seed_resolved_investigation "$home" "$origin")
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  archive="$home/data/done-archive.md"
+  grep -F "Origin: $origin" "$archive" >/dev/null \
+    || fail "the archived resolution did not record an origin to strip"
+  grep -v "^  Origin: " "$archive" > "$archive.legacy" \
+    || fail "could not build the pre-origin resolution fixture"
+  mv "$archive.legacy" "$archive"
+  assert_no_grep "Origin: " "$archive" "the fixture must carry no origin line at all"
+  grep -F "$hold" "$archive" >/dev/null || fail "the fixture lost the archived resolution"
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/legacy-verify.err" \
+    || fail "a resolution recorded before origins were written refused: $(cat "$home/legacy-verify.err")"
+  run_teardown "$home" "$origin" >/dev/null 2> "$home/legacy-teardown.err" \
+    || fail "a resolution recorded before origins were written blocked cleanup: $(cat "$home/legacy-teardown.err")"
+  pass "a resolution that names no origin keeps passing the completion gate"
+}
+
+# An answer must stay recordable for as long as the decision matters. A hold
+# closed outside `resolve` keeps its unanswered body, retention archives it, and
+# `resolve` reached the hold through the live backlog only - so the one command
+# that records the captain's answer refused permanently and the investigation
+# stayed parked forever. Widening that lookup must not widen what `resolve`
+# accepts: the routed work still has to exist and be durably blocked by the hold.
+test_resolve_records_an_answer_after_retention_archives_the_hold() {
+  local home origin hold dep show
+  home=$(make_home archived-resolve)
+  origin=sample-archived-answer-review
+  hold=$(seed_unanswered_decision "$home" "$origin" gauge)
+  dep="$origin-implementation"
+  tasks_in "$home" add "$dep" "Apply the selected sample gauge" --kind ship --repo sample \
+    --blocked-by "$hold" >/dev/null || fail "could not route dependent work behind the hold"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the hold outside the durable path"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  ! grep -E "^- \[[ x]\] $hold -" "$home/data/backlog.md" >/dev/null \
+    || fail "retention fixture left the closed hold in the live backlog"
+  if run_decisions "$home" verify "$origin" > "$home/unanswered.out" 2> "$home/unanswered.err"; then
+    fail "the gate accepted an archived decision before the captain answered it"
+  fi
+
+  printf 'Use the wide sample gauge.\n' > "$home/gauge-decision.txt"
+  run_decisions "$home" resolve "$origin" gauge --decision-file "$home/gauge-decision.txt" \
+    --routed-to "$dep" >/dev/null 2> "$home/archived-answer.err" \
+    || fail "an answer could not be recorded against an archived hold: $(cat "$home/archived-answer.err")"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "the answered hold did not close"
+  assert_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "the answered hold did not keep the durable resolution record"
+  assert_contains "$show" "Origin: $origin" "the recorded answer did not name its origin"
+  show=$(tasks_in "$home" show "$dep" --full)
+  assert_contains "$show" "blocked: no" "the recorded answer did not release the routed work"
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/answered-verify.err" \
+    || fail "the recorded answer did not satisfy the gate: $(cat "$home/answered-verify.err")"
+  run_decisions "$home" resolve "$origin" gauge --decision-file "$home/gauge-decision.txt" \
+    --routed-to "$dep" >/dev/null 2> "$home/answered-retry.err" \
+    || fail "the recorded answer was not idempotent: $(cat "$home/answered-retry.err")"
+
+  home=$(make_home archived-resolve-strict)
+  origin=sample-archived-strict-review
+  hold=$(seed_unanswered_decision "$home" "$origin" depth)
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the strict hold outside the durable path"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention to the strict fixture"
+  printf 'Use the deep sample setting.\n' > "$home/depth-decision.txt"
+  if run_decisions "$home" resolve "$origin" depth --decision-file "$home/depth-decision.txt" \
+    --routed-to sample-absent-implementation > "$home/strict.out" 2> "$home/strict.err"; then
+    fail "resolve against an archived hold accepted routed work that does not exist"
+  fi
+  assert_grep "does not exist in the active home" "$home/strict.err" \
+    "an archived hold must still require its routed work to exist"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "a refused resolution recorded an answer anyway"
+  assert_contains "$show" "held: yes" "a refused resolution left the decision unheld"
+  pass "an answer stays recordable after retention archives its captain hold"
+}
+
+# The archive path is per-home configuration. tasks-axi honours TOML literal
+# strings as readily as double-quoted ones, and a home with no .tasks.toml still
+# archives, because tasks-axi does not walk up to a parent config. Reading either
+# as "this home has no archive" silently reinstates the permanent refusal there.
+test_archive_lookup_reads_literal_string_and_default_archive_paths() {
+  local home origin hold
+  home=$(make_home literal-archive-path)
+  cat > "$home/.tasks.toml" <<'EOF'
+backend = 'markdown'
+
+[markdown]
+path = 'data/backlog.md'
+archive = 'data/literal-archive.md'
+done_keep = 10
+EOF
+  origin=sample-literal-archive-review
+  hold=$(seed_resolved_investigation "$home" "$origin")
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  grep -F "$hold" "$home/data/literal-archive.md" >/dev/null \
+    || fail "retention fixture did not use the literal-string archive path"
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/literal-verify.err" \
+    || fail "the gate ignored a literal-string archive path: $(cat "$home/literal-verify.err")"
+
+  home=$(make_home default-archive-path)
+  rm -f "$home/.tasks.toml" "$home/data/backlog.md"
+  origin=sample-default-archive-review
+  hold=$(seed_resolved_investigation "$home" "$origin")
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention"
+  grep -F "$hold" "$home/done-archive.md" >/dev/null \
+    || fail "a home with no config did not archive into the tasks-axi default"
+  [ ! -e "$home/data/done-archive.md" ] || fail "the no-config fixture archived into a configured path"
+  run_decisions "$home" verify "$origin" >/dev/null 2> "$home/default-verify.err" \
+    || fail "the gate refused a home that has no .tasks.toml: $(cat "$home/default-verify.err")"
+  pass "the archive lookup reads literal-string and defaulted archive paths"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -741,3 +937,7 @@ test_archived_resolution_still_passes_the_completion_gate
 test_archive_lookup_follows_the_configured_archive_path
 test_archive_lookup_refuses_unregistered_open_and_unresolved_decisions
 test_archived_unanswered_decision_still_refuses
+test_archive_lookup_reads_literal_string_and_default_archive_paths
+test_a_resolution_answers_only_the_origin_it_names
+test_a_resolution_without_a_recorded_origin_still_passes
+test_resolve_records_an_answer_after_retention_archives_the_hold
