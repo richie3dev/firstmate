@@ -14,7 +14,10 @@ DESTINATION=${1:?usage: fm-install-shellcheck.sh <destination-directory>}
 TMP=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fm-shellcheck.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
-curl -fsSL "$URL" -o "$TMP/$ARCHIVE"
+# Bounded: bin/fm-lint.sh reaches this installer automatically from the pre-push
+# lint gate, so a stalled connection must fail into that gate's refusal path
+# instead of hanging the gate with no output.
+curl -fsSL --connect-timeout 10 --max-time 120 "$URL" -o "$TMP/$ARCHIVE"
 ACTUAL_SHA256=$(sha256sum "$TMP/$ARCHIVE" | awk '{print $1}')
 [ "$ACTUAL_SHA256" = "$SHA256" ] || {
   printf 'fm-install-shellcheck.sh: checksum mismatch for %s\n' "$ARCHIVE" >&2

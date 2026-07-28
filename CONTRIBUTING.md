@@ -45,7 +45,12 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   Each starts with a usage header comment; keep it accurate when you change behavior.
   Test scripts and helpers in `tests/` are plain bash too.
   `bin/fm-lint.sh` must pass: it is the single owner of the lint definition (the shellcheck file set, config, and pinned shellcheck version), and both CI and the no-mistakes pre-push gate run it, so local and CI can never diverge.
-  It pins one exact shellcheck version and refuses to run under any other; print it with `bin/fm-lint.sh --required-version` and install that build locally.
+  It pins one exact shellcheck version and lints with that version and no other; print it with `bin/fm-lint.sh --required-version`.
+  You do not have to install it yourself: it resolves the pin from `PATH` first, then from a private version-keyed cache under `FM_SHELLCHECK_CACHE` (default `${XDG_CACHE_HOME:-$HOME/.cache}/firstmate/shellcheck`), and provisions that cache through `bin/fm-install-shellcheck.sh` when neither has it.
+  The cache is never on `PATH` and is keyed by version, so it never rewrites the machine's own `shellcheck` and never overwrites a binary a concurrent run is executing.
+  Session-start bootstrap does the same resolution, so a machine missing the pinned build is reported then rather than at push time.
+  When the pin cannot be resolved or installed, the script refuses and lints nothing; there is no degraded mode, so a zero exit always means the pinned rule set passed.
+  Linting by hand at another version is not a substitute: a lower severity or an older rule set reports something CI does not, which is how work passes locally and fails CI.
 - Changes to harness adapters (detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, busy signatures in `bin/fm-watch.sh` and `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`) must be verified empirically against the real harness, never written from documentation alone.
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) need empirical adapter notes in the relevant backend guide: `docs/tmux-backend.md`, `docs/herdr-backend.md`, `docs/zellij-backend.md`, `docs/orca-backend.md`, `docs/cmux-backend.md`, or `docs/codex-app-backend.md` for blocked Codex App transport work.
 - In Markdown, put each full sentence on its own line.
