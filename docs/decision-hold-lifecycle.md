@@ -42,6 +42,11 @@ Retention archives a closed hold, and tasks-axi cannot write into the archive, s
 Without that, an answer to a decision that had aged out could never be recorded at all: re-running `hold` cannot recover it either, because that path requires origin state teardown has already removed.
 Restoring widens nothing else - the restored hold carries the unanswered body a fresh hold gets, so another investigation's archived answer is never inherited, and every routed task must still exist and still be durably blocked by the hold.
 
+That restore is a durable write, so every precondition is checked before it rather than after.
+A command that fails must not change the gate's verdict: a mistyped `--routed-to` would otherwise leave the decision resurrected as an actively held item, which the gate accepts, and teardown would then erase a source whose captain decision is still unanswered - a refused operation leaving the system less safe than it found it.
+Checking first means a refused `resolve` writes nothing at all, so the backlog, the archive, and the verdict are exactly as it found them.
+The routed-task check reads each task's `deps` rather than its `blocked_by` for the same reason: `blocked_by` is the live view of what still blocks a task and drops the edge as soon as its blocker closes, while `deps` records the edge whatever state the blocker is in, which is what "durably blocked by the hold" has to mean once the hold itself has been archived.
+
 ## Structured read surfaces
 
 `bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
@@ -166,6 +171,13 @@ not ok - a resolution recorded before origins were written refused: fm-decision-
 sample-legacy-resolution-review-decision-route is neither actively held nor durably resolved
 ```
 
+A fourth regression pins the failure path: a resolve that refuses must leave the backlog, the archive, and the gate's verdict byte-for-byte as it found them.
+Restoring the archived hold before the routed-task checks fails it, because a mistyped `--routed-to` then leaves the decision live and actively held, which the gate accepts.
+
+```text
+not ok - a refused resolution changed durable backlog state
+```
+
 The tasks-axi 0.2.2 path rules the archive lookup now mirrors were read from its own `dist/src/config.js` rather than inferred: per-key resolution over `.tasks.toml` then `~/.tasks-axi/config.toml`, both quote styles, `dirname(path)/done-archive.md` when no archive is configured, and backlog discovery over `backlog.md` then `data/backlog.md`.
 
 ```text
@@ -187,6 +199,7 @@ ok - the archive lookup reads literal-string and defaulted archive paths
 ok - an archived resolution answers only the origin it names
 ok - a resolution that names no origin keeps passing the completion gate
 ok - an answer stays recordable after retention archives its captain hold
+ok - a refused resolution leaves an archived hold, and the gate's verdict, untouched
 
 $ /home/dev/.cache/firstmate/shellcheck/0.11.0/shellcheck -x bin/fm-decision-hold.sh bin/fm-tasks-axi-lib.sh tests/fm-decision-hold-lifecycle.test.sh
 (no output)

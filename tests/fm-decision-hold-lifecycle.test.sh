@@ -868,11 +868,30 @@ test_resolve_records_an_answer_after_retention_archives_the_hold() {
     --routed-to "$dep" >/dev/null 2> "$home/answered-retry.err" \
     || fail "the recorded answer was not idempotent: $(cat "$home/answered-retry.err")"
 
+  pass "an answer stays recordable after retention archives its captain hold"
+}
+
+# A command that fails must not change the gate's verdict. Restoring an archived
+# hold is a durable write, so a resolve that later refuses - a mistyped
+# --routed-to, work the hold never blocked - would otherwise leave the decision
+# resurrected as an actively held item, which the gate accepts, and teardown
+# would erase a source whose captain decision is still unanswered. A refused
+# resolution must leave the backlog, the archive, and the verdict untouched.
+test_a_refused_resolution_leaves_an_archived_hold_untouched() {
+  local home origin hold unrouted before after
   home=$(make_home archived-resolve-strict)
   origin=sample-archived-strict-review
   hold=$(seed_unanswered_decision "$home" "$origin" depth)
+  unrouted="$origin-unrouted"
+  tasks_in "$home" add "$unrouted" "Sample work the decision never blocked" --kind ship --repo sample >/dev/null \
+    || fail "could not create the unrouted control task"
   tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the strict hold outside the durable path"
   tasks_in "$home" prune --keep 0 >/dev/null || fail "could not apply backlog retention to the strict fixture"
+  if run_decisions "$home" verify "$origin" > "$home/before.out" 2> "$home/before.err"; then
+    fail "the gate accepted the unanswered decision before any resolution was attempted"
+  fi
+  before=$(cat "$home/data/backlog.md" "$home/data/done-archive.md" | shasum -a 256 | awk '{print $1}')
+
   printf 'Use the deep sample setting.\n' > "$home/depth-decision.txt"
   if run_decisions "$home" resolve "$origin" depth --decision-file "$home/depth-decision.txt" \
     --routed-to sample-absent-implementation > "$home/strict.out" 2> "$home/strict.err"; then
@@ -880,11 +899,29 @@ test_resolve_records_an_answer_after_retention_archives_the_hold() {
   fi
   assert_grep "does not exist in the active home" "$home/strict.err" \
     "an archived hold must still require its routed work to exist"
-  show=$(tasks_in "$home" show "$hold" --full)
-  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
-    "a refused resolution recorded an answer anyway"
-  assert_contains "$show" "held: yes" "a refused resolution left the decision unheld"
-  pass "an answer stays recordable after retention archives its captain hold"
+  if run_decisions "$home" resolve "$origin" depth --decision-file "$home/depth-decision.txt" \
+    --routed-to "$unrouted" > "$home/unrouted.out" 2> "$home/unrouted.err"; then
+    fail "resolve against an archived hold accepted work it never blocked"
+  fi
+  assert_grep "not durably blocked by" "$home/unrouted.err" \
+    "an archived hold must still require its routed work to be blocked by it"
+
+  after=$(cat "$home/data/backlog.md" "$home/data/done-archive.md" | shasum -a 256 | awk '{print $1}')
+  [ "$before" = "$after" ] || fail "a refused resolution changed durable backlog state"
+  ! grep -E "^- \[[ x]\] $hold -" "$home/data/backlog.md" >/dev/null \
+    || fail "a refused resolution resurrected the archived hold into the live backlog"
+  if run_decisions "$home" verify "$origin" > "$home/after.out" 2> "$home/after.err"; then
+    fail "a refused resolution flipped the gate into accepting an unanswered decision"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/after.err" \
+    "the verdict after a refused resolution must be the verdict before it"
+  if run_teardown "$home" "$origin" >/dev/null 2> "$home/strict-teardown.err"; then
+    fail "a refused resolution let cleanup erase a source whose decision is unanswered"
+  fi
+  assert_grep "REFUSED" "$home/strict-teardown.err" "the cleanup refusal must be explicit"
+  assert_present "$home/state/$origin.meta" "refused cleanup removed investigation metadata"
+  assert_present "$home/data/$origin/report.md" "refused cleanup removed the investigation report"
+  pass "a refused resolution leaves an archived hold, and the gate's verdict, untouched"
 }
 
 # The archive path is per-home configuration. tasks-axi honours TOML literal
@@ -941,3 +978,4 @@ test_archive_lookup_reads_literal_string_and_default_archive_paths
 test_a_resolution_answers_only_the_origin_it_names
 test_a_resolution_without_a_recorded_origin_still_passes
 test_resolve_records_an_answer_after_retention_archives_the_hold
+test_a_refused_resolution_leaves_an_archived_hold_untouched

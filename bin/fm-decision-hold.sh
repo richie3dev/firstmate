@@ -44,6 +44,8 @@
 # before the final step leaves the captain hold open. A hold retention has already
 # archived is restored into the live backlog first, so an answer stays recordable
 # for as long as the decision matters rather than only until `done_keep` expires.
+# Every precondition is checked before that restore, so a refused `resolve` writes
+# nothing and leaves the gate's verdict exactly where it found it.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -304,6 +306,36 @@ verify_resolution_identity() {
     || fail "captain hold $id records different routed work"
 }
 
+# The durable dependency record. `blocked_by` is the live view of what still
+# blocks a task, so it drops an edge the moment its blocker closes and reads as
+# absent for a hold retention has already archived. `deps` keeps every recorded
+# edge whatever state its blocker is in, and tasks-axi quotes a multi-entry
+# value as "blocked-by:a,blocked-by:b", so strip the quotes before matching on
+# comma boundaries.
+routed_edge_exists() {  # <routed-task-record> <hold-id>
+  local deps
+  deps=$(show_field "$1" deps | tr -d '[:space:]')
+  deps=${deps#\"}
+  deps=${deps%\"}
+  case ",$deps," in
+    *",blocked-by:$2,"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Everything about an archived hold that has to hold before it may be restored.
+# Read-only, so `resolve` can clear every precondition while the hold is still
+# archived and reach its first write knowing the write will not have to be undone.
+verify_archived_hold_restorable() {  # <origin-id> <hold-id> <record>
+  local origin=$1 id=$2 record=$3
+  [ "$(show_field "$record" kind)" = captain ] \
+    || fail "archived backlog item $id is not kind captain"
+  origin_matches "$(show_body "$record")" "$origin" \
+    || fail "archived captain hold $id was filed for another origin"
+  [ -n "$(show_field "$record" title)" ] \
+    || fail "archived captain hold $id has no title to restore"
+}
+
 # Bring an archived captain hold back into the live backlog so the captain's
 # answer can still be recorded against it. Retention archives a hold once it is
 # closed and tasks-axi cannot write into the archive, so an answer to a decision
@@ -312,16 +344,9 @@ verify_resolution_identity() {
 # restored item keeps the archived title and repo and gets the same unanswered
 # body a fresh hold gets, because the archived body is either that same
 # unanswered text or another investigation's answer, which is never inherited.
-restore_archived_hold() {  # <origin-id> <decision-key> <hold-id>
-  local origin=$1 key=$2 id=$3 record title repo body
-  record=$(fm_tasks_axi_archive_show "$FM_HOME" "$id") \
-    || fail "captain hold $id is absent from the $FM_HOME backlog and its archive"
-  [ "$(show_field "$record" kind)" = captain ] \
-    || fail "archived backlog item $id is not kind captain"
-  origin_matches "$(show_body "$record")" "$origin" \
-    || fail "archived captain hold $id was filed for another origin"
+restore_archived_hold() {  # <origin-id> <decision-key> <hold-id> <record>
+  local origin=$1 key=$2 id=$3 record=$4 title repo body
   title=$(show_field "$record" title)
-  [ -n "$title" ] || fail "archived captain hold $id has no title to restore"
   repo=$(show_field "$record" repo)
   [ -n "$repo" ] || repo=firstmate
   body=$(printf 'Origin: %s\nDecision key: %s\nState: awaiting captain decision.' "$origin" "$key")
@@ -476,7 +501,7 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0 archived=0
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -508,11 +533,14 @@ command_resolve() {
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  if ! task_show "$id" >/dev/null; then
-    restore_archived_hold "$origin" "$key" "$id"
+  if hold_show=$(task_show "$id"); then
+    verify_hold_active "$id"
+  else
+    archived=1
+    hold_show=$(fm_tasks_axi_archive_show "$FM_HOME" "$id") \
+      || fail "captain hold $id is absent from the $FM_HOME backlog and its archive"
+    verify_archived_hold_restorable "$origin" "$id" "$hold_show"
   fi
-  verify_hold_active "$id"
-  hold_show=$(task_show "$id")
   hold_body=$(show_body "$hold_show")
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
@@ -528,20 +556,21 @@ command_resolve() {
     state=$(show_field "$show" state)
     [ "$state" != "done" ] || [ "$resolution_recorded" = 1 ] \
       || fail "routed task $dep is already done"
-    # tasks-axi quotes multi-entry blocked_by as "a,b,c"; strip so edge ids match.
-    blocked=$(show_field "$show" blocked_by | tr -d '[:space:]')
-    blocked=${blocked#\"}
-    blocked=${blocked%\"}
-    case ",$blocked," in
-      *",$id,"*) : ;;
-      *)
-        case "$hold_body" in
-          *"Resolution recorded by fm-decision-hold."*"- $dep"*) : ;;
-          *) fail "routed task $dep is not durably blocked by $id" ;;
-        esac
-        ;;
-    esac
+    if ! routed_edge_exists "$show" "$id"; then
+      case "$hold_body" in
+        *"Resolution recorded by fm-decision-hold."*"- $dep"*) : ;;
+        *) fail "routed task $dep is not durably blocked by $id" ;;
+      esac
+    fi
   done
+
+  # Every precondition has been checked, so the first write below is also the
+  # first change a caller can observe: a refused resolution leaves the backlog,
+  # the archive, and therefore the gate's verdict exactly as it found them.
+  if [ "$archived" = 1 ]; then
+    restore_archived_hold "$origin" "$key" "$id" "$hold_show"
+    verify_hold_active "$id"
+  fi
 
   body=$(printf 'Resolution recorded by fm-decision-hold.\nOrigin: %s\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\n' "$origin" "$decision_digest" "$routed_csv" "$decision")
   for dep in $routed; do
