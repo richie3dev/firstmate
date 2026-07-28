@@ -50,6 +50,15 @@
 # which outlives the discarded worktree, while a ship persists into the worktree
 # whose commits survive relaunch, and a ship hands off WITHOUT committing while a
 # no-mistakes run is active so the section cannot contradict that definition of done.
+# Ship and scout scaffolds also share two shared-machine rules the crewmate cannot
+# derive from inside its own worktree: kill only a process id you started yourself
+# and never match by pattern, because many crews share one box; and back every
+# backgrounded gate call with a fixed-interval poll rather than a waiter armed on the
+# run's own state, because a dead client leaves the run advancing in the shared daemon
+# and steps that find nothing never open a gate for such a waiter to fire on. That poll
+# stops at a gate or terminal outcome, and instead appends `blocked:` and stops when the
+# run's own reported activity stays marked quiet across two consecutive polls, so it
+# neither spins forever nor leaves a stopped run unreported.
 # Ship tasks include a project-memory section so durable project-intrinsic
 # learnings can be committed to AGENTS.md through the project's delivery path;
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
@@ -220,6 +229,52 @@ Keep scratch in \`.fm-scratch/\` at the worktree root, created once with \`mkdir
 EOF
 }
 
+# Shared by ship and scout scaffolds, appended to both Rules lists as rules 8 and 9.
+# Both are shared-machine hazards a crewmate cannot see from inside its own worktree,
+# so neither can be left to the crewmate to derive.
+# Rule 8 mirrors AGENTS.md section 8's watcher rule at the crew level: this box runs
+# many crews at once, so any match-by-pattern kill reaches siblings and the caller's
+# own agent.
+# Rule 9's interval is chosen against measured rounds: individual gate rounds ran about
+# ninety seconds to seventeen minutes, inside review and test steps totalling thirty to
+# seventy minutes. Five minutes bounds the silent window well under the thirteen minutes
+# of dead idle actually observed, costs about three polls on a long round and usually
+# none on a short one, and stays far from the per-minute polling the constraint forbids.
+# Rule 9's termination bound keys off the activity timestamp the run itself reports and
+# never off the step name staying the same: a healthy test step was measured holding
+# "fixing" for sixty-seven minutes while genuinely working, and a healthy review step
+# reported no new activity for over five minutes before completing normally at seven, so
+# a step-unchanged check and any hand-picked silence threshold both report false blocks.
+# no-mistakes already publishes the right signal - `axi status` prefixes last_activity
+# with "quiet" once no step log or agent lifecycle activity has arrived for longer than
+# its configured step_quiet_warning (default ten minutes) - so the rule defers to that
+# marker instead of adding a competing constant, and the threshold stays owned in one place.
+# The body avoids apostrophes: bash tracks quote state through a heredoc body while it
+# scans for the closing `)` of the command substitution, so one stray apostrophe here
+# breaks `bash -n` on the whole script under the bash 3.2 this repo still targets.
+SHARED_RULES=$(cat <<'EOF'
+8. Never kill a process you did not start yourself. Several crews share this machine, so a
+   match-by-pattern kill such as `pkill -f "just ci"` reaches the runs of every other crew,
+   and frequently the shell of the calling agent as well. Kill only a specific process id you
+   captured when you started that process; never use `pkill`, `killall`, or any other
+   kill that selects by pattern.
+9. When you background a long call whose return is your only cue to continue - a `no-mistakes axi`
+   gate call above all - also arm a fixed-interval poll of the run and re-check it every 5 minutes.
+   A dead client does not stop the run: the pipeline runs in the shared daemon, so it keeps
+   advancing, and steps that find nothing never open a gate at all. A waiter armed only on
+   "parked" or on a terminal state therefore cannot fire, because what died was the client, not
+   the run. A timer fires on the clock instead, so the silence stays bounded at one interval.
+   Stop polling once the run reaches a gate or a terminal outcome. If instead `axi status` reports
+   the last activity of the run prefixed with `quiet` - the stalled-run marker no-mistakes emits
+   from its own `step_quiet_warning` - on two consecutive polls, the run has stopped rather than
+   slowed, so append `blocked: {run id} not advancing` and stop. Bound that decision on the
+   reported activity timestamp and never on the step name staying the same: a healthy step can
+   hold one name for over an hour while reporting activity throughout.
+   Keep a state-predicate waiter as an optimisation on top of the timer if you want it, never as
+   the only mechanism. Polling is not progress: report status as sparsely as rule 4 requires.
+EOF
+)
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -291,6 +346,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$SHARED_RULES
 
 $CONTEXT_SECTION
 
@@ -407,6 +463,7 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+$SHARED_RULES
 
 $CONTEXT_SECTION
 
