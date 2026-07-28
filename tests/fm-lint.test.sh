@@ -370,12 +370,67 @@ test_installer_hashes_without_gnu_coreutils() {
   [ -n "$body" ] || fail "the installer must keep its checksum step in one readable file_sha256 function"
   assert_contains "$body" "shasum -a 256" "the installer must try shasum, which stock macOS has"
   assert_contains "$body" "sha256sum" "the installer must still accept GNU coreutils where that is what exists"
-  first=$(printf '%s\n' "$body" | grep -o 'shasum -a 256\|sha256sum' | head -1)
+  # ERE, not `\|`: BSD grep (macOS /usr/bin/grep) has no BRE alternation and
+  # would search for the literal string "shasum -a 256|sha256sum", match nothing,
+  # and fail this case on the one platform the change exists to unblock.
+  first=$(printf '%s\n' "$body" | grep -Eo 'shasum -a 256|sha256sum' | head -1)
   [ "$first" = "shasum -a 256" ] \
     || fail "the installer must try shasum BEFORE sha256sum, or macOS still fails at the checksum"$'\n'"$body"
   # No hasher at all must refuse, never install an unhashed download.
   assert_grep 'no SHA-256 tool found' "$INSTALLER" "a machine with no hasher must refuse rather than skip the checksum"
   pass "the checksum step works on a machine without GNU coreutils"
+}
+
+test_installer_separates_a_broken_hasher_from_a_bad_download() {
+  # `hasher | awk` reports awk's status, so a hasher that fails hands back an
+  # empty digest at exit 0. That never equals a 64-hex checksum, so the install
+  # is still refused - but refused as a checksum mismatch, which sends the reader
+  # after the download instead of the broken tool. Run both hasher failures for
+  # real, because the distinction is in the exit paths, not in the prose.
+  local tmp curlbin badhasher base out rc
+  tmp=$(fm_test_tmproot fm-lint-hasher)
+  curlbin=$(fm_fakebin "$tmp")
+  # A curl that writes the archive locally, so the checksum step is reached with
+  # no network. It honours -o because that is how the installer names its target.
+  cat > "$curlbin/curl" <<'SH'
+#!/usr/bin/env bash
+target=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) target=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$target" ] || exit 1
+printf 'not the pinned archive\n' > "$target"
+SH
+  chmod +x "$curlbin/curl"
+
+  # A hasher that is present but fails.
+  badhasher="$tmp/badhasher"
+  mkdir -p "$badhasher"
+  cat > "$badhasher/shasum" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$badhasher/shasum"
+  rc=0
+  out=$(PATH="$badhasher:$curlbin:$PATH" "$INSTALLER" "$tmp/dest" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a hasher that fails must refuse"
+  assert_contains "$out" "REFUSING" "a failed hasher must read as a refusal"
+  assert_contains "$out" "hasher failure" "a failed hasher must be named as the cause"
+  assert_not_contains "$out" "checksum mismatch for" "a failed hasher must not be blamed on the download"
+  assert_absent "$tmp/dest/shellcheck" "an unhashed download must never be installed"
+
+  # No hasher at all. Built by removing both tools from the base PATH, because
+  # the installer reads presence with command -v and a stub still reads present.
+  base=$(fm_hermetic_base_path "$tmp/farm" shasum sha256sum)
+  rc=0
+  out=$(PATH="$curlbin:$base" "$INSTALLER" "$tmp/dest-none" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a machine with no hasher must refuse"
+  assert_contains "$out" "no SHA-256 tool found" "the no-hasher refusal must name the missing tool"
+  assert_absent "$tmp/dest-none/shellcheck" "an unhashed download must never be installed"
+  pass "a broken hasher and a missing one each refuse by their own name"
 }
 
 test_installer_extraction_needs_no_xz() {
@@ -547,6 +602,7 @@ test_installer_never_falls_through_to_another_architecture
 test_installer_refuses_unclaimed_architectures_by_name
 test_installer_separates_provenance_from_runtime_evidence
 test_installer_hashes_without_gnu_coreutils
+test_installer_separates_a_broken_hasher_from_a_bad_download
 test_installer_extraction_needs_no_xz
 test_installer_matrix_is_bound_to_the_pinned_version
 test_ensure_mode_is_not_reportable_as_a_lint_pass

@@ -122,14 +122,31 @@ ROWS
   printf '%s\n' "$out"
 }
 
+# Print the file's sha256, or fail with a status the caller can attribute:
+#   1 - this machine has no SHA-256 tool at all
+#   2 - a tool ran but handed back no 64-hex digest
+# Those are different causes and must not collapse into one message. The status
+# of `hasher | awk` is awk's, and this script sets no pipefail, so a hasher that
+# fails (an unreadable file, a shasum whose Digest::SHA is missing) would
+# otherwise succeed with empty output - which never equals a real checksum, so
+# the install is still refused, but refused as a checksum mismatch, sending the
+# reader after the download instead of the broken tool. Checking the digest's
+# shape rather than the pipeline's status also catches a truncated or garbled
+# one, not only a hasher that failed outright.
 file_sha256() {
+  local digest
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    digest=$(shasum -a 256 "$1" | awk '{print $1}') || digest=
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    digest=$(sha256sum "$1" | awk '{print $1}') || digest=
   else
     return 1
   fi
+  case "$digest" in
+    *[!0-9a-f]*) return 2 ;;
+  esac
+  [ "${#digest}" -eq 64 ] || return 2
+  printf '%s\n' "$digest"
 }
 
 VERSION="$("$ROOT/bin/fm-lint.sh" --required-version)"
@@ -174,8 +191,14 @@ trap 'rm -rf "$TMP"' EXIT
 # instead of hanging the gate with no output.
 curl -fsSL --connect-timeout 10 --max-time 120 "$URL" -o "$TMP/$ARCHIVE"
 
-if ! ACTUAL_SHA256=$(file_sha256 "$TMP/$ARCHIVE"); then
+HASH_STATUS=0
+ACTUAL_SHA256=$(file_sha256 "$TMP/$ARCHIVE") || HASH_STATUS=$?
+if [ "$HASH_STATUS" -eq 1 ]; then
   printf 'fm-install-shellcheck.sh: REFUSING - no SHA-256 tool found. Install shasum (preinstalled on macOS) or sha256sum (GNU coreutils); the download is never trusted unhashed.\n' >&2
+  exit 1
+elif [ "$HASH_STATUS" -ne 0 ]; then
+  printf 'fm-install-shellcheck.sh: REFUSING - the SHA-256 tool on this machine ran but produced no usable digest for %s. This is a hasher failure, not a checksum mismatch, so check that shasum or sha256sum works here rather than suspecting the download; the download is never trusted unhashed.\n' \
+    "$ARCHIVE" >&2
   exit 1
 fi
 [ "$ACTUAL_SHA256" = "$SHA256" ] || {
