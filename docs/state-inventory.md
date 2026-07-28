@@ -68,6 +68,9 @@ Which backends are verified, which are experimental, which are auto-detectable, 
 
 ```
 data/backlog.md      task queue, dependencies, history (AGENTS.md section 10)
+data/done-archive.md tasks-axi retention archive for closed items aged out of the backlog; the
+                     decision gate reads it, so a resolved captain decision stays durable past
+                     done_keep (docs/decision-hold-lifecycle.md)
 data/captain.md      this home's domain-local captain preferences and working style; canonical
                      even if harness memory mirrors it, and updated with inspect-then-update
 data/captain-shared.md  main-authoritative shared captain preferences propagated read-only to

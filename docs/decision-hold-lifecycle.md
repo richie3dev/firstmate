@@ -12,6 +12,8 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
+That resolved-identity refusal still reads the live backlog only, so once retention has archived a resolved decision, `hold` re-creates the identity as a fresh unanswered captain item instead of refusing it.
+That asymmetry with the archive-aware checks below is deliberate for now: the same live-only lookup is currently the only way to re-materialise an archived decision that has to be asked again, and closing it before a named replacement exists would leave such a decision unrecoverable, so it is filed as its own follow-up rather than fixed here.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -39,7 +41,7 @@ An exact retry can finish a partial routing operation, while a changed decision 
 A failed intermediate step leaves the hold open.
 
 Retention archives a closed hold, and tasks-axi cannot write into the archive, so `resolve` restores an archived captain hold into the live backlog before recording an answer against it.
-Without that, an answer to a decision that had aged out could never be recorded at all: re-running `hold` cannot recover it either, because that path requires origin state teardown has already removed.
+Without that, an answer to a decision that had aged out would stay recordable only for as long as re-running `hold` could re-materialise the identity, and `hold` refuses once the active home no longer owns the origin - once neither its state file nor its report survives there.
 Restoring widens nothing else - the restored hold carries the unanswered body a fresh hold gets, so another investigation's archived answer is never inherited, and every routed task must still exist and still be durably blocked by the hold.
 
 That restore is a durable write, so every precondition is checked before it rather than after.
