@@ -85,7 +85,7 @@ test_ci_installs_and_logs_the_pinned_version() {
   # number) and log the resolved version as parity evidence.
   assert_grep "VERSION=\"\$(\"\$ROOT/bin/fm-lint.sh\" --required-version)\"" "$INSTALLER" "installer must read the version fm-lint.sh pins"
   [ "$(grep -Fc "bin/fm-install-shellcheck.sh \"\$RUNNER_TEMP/bin\"" "$CI")" -eq 2 ] || fail "both CI jobs must use the shared ShellCheck installer"
-  assert_grep "ACTUAL_SHA256=\$(sha256sum" "$INSTALLER" "installer must calculate the ShellCheck archive checksum"
+  assert_grep "ACTUAL_SHA256=\$(file_sha256" "$INSTALLER" "installer must calculate the ShellCheck archive checksum"
   assert_grep "[ \"\$ACTUAL_SHA256\" = \"\$SHA256\" ]" "$INSTALLER" "installer must verify the ShellCheck archive checksum"
   assert_grep "\"\$DESTINATION/shellcheck\" --version" "$INSTALLER" "installer must log the resolved ShellCheck version as evidence"
   pass "CI installs and logs the pinned ShellCheck version from the one owner"
@@ -209,6 +209,218 @@ test_installer_bounds_its_download() {
   pass "the pinned-build download is bounded"
 }
 
+# --- platform binding -------------------------------------------------------
+#
+# The installer used to hardcode one linux.x86_64 asset, so on an arm64 Linux or
+# any macOS it could not provision the pin at all and fm-lint.sh refused - the
+# whole lint gate offline on that machine, which is exactly the CI-only-lint
+# state the pin exists to prevent. The cases below exercise selection and
+# refusal for every platform from one machine and download nothing: --print-asset
+# resolves and exits, and FM_SHELLCHECK_UNAME_S/M simulate the machine.
+
+# Every uname pair the installer claims, and the upstream platform token each
+# must resolve to. Kept here as the test's own expectation so a silent edit to
+# the script's matrix cannot also edit what is asserted about it.
+CLAIMED_PLATFORMS='Linux x86_64 linux.x86_64
+Linux amd64 linux.x86_64
+Linux aarch64 linux.aarch64
+Linux arm64 linux.aarch64
+Linux armv6l linux.armv6hf
+Linux armv7l linux.armv6hf
+Linux armv8l linux.armv6hf
+Linux riscv64 linux.riscv64
+Darwin x86_64 darwin.x86_64
+Darwin arm64 darwin.aarch64
+Darwin aarch64 darwin.aarch64'
+
+# Machines upstream publishes no asset for at this version, so the installer
+# must refuse rather than guess something adjacent.
+UNCLAIMED_PLATFORMS='Linux i686
+Linux ppc64le
+Linux s390x
+Darwin i386
+FreeBSD amd64
+SunOS i86pc'
+
+print_asset_for() {
+  FM_SHELLCHECK_UNAME_S=$1 FM_SHELLCHECK_UNAME_M=$2 "$INSTALLER" --print-asset 2>&1
+}
+
+asset_field() {
+  printf '%s\n' "$1" | awk -v key="$2:" '$1 == key { print $2 }'
+}
+
+test_installer_selects_an_asset_per_claimed_platform() {
+  local os arch token out archive sha
+  while read -r os arch token; do
+    out=$(print_asset_for "$os" "$arch") \
+      || fail "installer refused a claimed platform ($os/$arch)"$'\n'"$out"
+    archive=$(asset_field "$out" archive)
+    sha=$(asset_field "$out" sha256)
+    [ "$archive" = "shellcheck-v$REQUIRED.$token.tar.gz" ] \
+      || fail "$os/$arch resolved to '$archive', expected the $token asset for the pinned version"
+    # A checksum is what makes a claim honest, so an empty or malformed one is a
+    # failure even though the selection looked right.
+    printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{64}$' \
+      || fail "$os/$arch carries no valid sha256 ('$sha')"
+    assert_contains "$out" "/releases/download/v$REQUIRED/$archive" \
+      "$os/$arch must resolve the upstream URL for its own asset"
+  done <<CLAIMED
+$CLAIMED_PLATFORMS
+CLAIMED
+  pass "the installer resolves a checksummed asset for every claimed platform"
+}
+
+test_installer_never_falls_through_to_another_architecture() {
+  # The defect this replaces was silent: every machine got the x86_64 asset. A
+  # fallthrough would reappear as two different architectures sharing one
+  # checksum, so distinctness is the property worth asserting.
+  local os arch token out pair seen=
+  while read -r os arch token; do
+    out=$(print_asset_for "$os" "$arch") || fail "installer refused a claimed platform ($os/$arch)"
+    pair="$token $(asset_field "$out" sha256)"
+    case "$seen" in
+      *"$pair"*) : ;;
+      *)
+        # A checksum already bound to a DIFFERENT token means two architectures
+        # resolved to the same bytes.
+        case "$seen" in
+          *"$(asset_field "$out" sha256)"*)
+            fail "$os/$arch ($token) reuses the checksum of another architecture"
+            ;;
+        esac
+        seen="$seen$pair"$'\n'
+        ;;
+    esac
+  done <<CLAIMED
+$CLAIMED_PLATFORMS
+CLAIMED
+  pass "each architecture resolves its own asset, never another's"
+}
+
+test_installer_refuses_unclaimed_architectures_by_name() {
+  local os arch out rc tmp fakebin
+  tmp=$(fm_test_tmproot fm-lint-arch)
+  fakebin=$(fm_fakebin "$tmp")
+  # A curl that records being called, so "refused before any download" is
+  # asserted rather than assumed from where the check sits in the script.
+  cat > "$fakebin/curl" <<SH
+#!/usr/bin/env bash
+printf 'called\n' >> '$tmp/curl-was-called'
+exit 1
+SH
+  chmod +x "$fakebin/curl"
+  while read -r os arch; do
+    rc=0
+    out=$(PATH="$fakebin:$PATH" FM_SHELLCHECK_UNAME_S="$os" FM_SHELLCHECK_UNAME_M="$arch" \
+      "$INSTALLER" "$tmp/never" 2>&1) || rc=$?
+    expect_code 1 "$rc" "installer must refuse $os/$arch"
+    assert_contains "$out" "REFUSING" "the $os/$arch refusal must read as a refusal"
+    # By name: the message must print what it detected, not a generic failure.
+    assert_contains "$out" "uname -s=$os" "the refusal must name the detected OS"
+    assert_contains "$out" "uname -m=$arch" "the refusal must name the detected architecture"
+    # And what a human can do about it.
+    assert_contains "$out" "claimed platforms are" "the refusal must name what IS supported"
+    assert_contains "$out" "releases/tag/v$REQUIRED" "the refusal must point at the upstream asset list"
+    assert_contains "$out" "PATH" "the refusal must offer the PATH route fm-lint.sh resolves first"
+    assert_absent "$tmp/never" "a refused platform must not create a destination"
+  done <<UNCLAIMED
+$UNCLAIMED_PLATFORMS
+UNCLAIMED
+  assert_absent "$tmp/curl-was-called" "an unclaimed platform must refuse before downloading anything"
+  pass "unclaimed architectures refuse by name with an actionable message"
+}
+
+test_installer_separates_provenance_from_runtime_evidence() {
+  # A published checksum proves the bytes are upstream's. It does not prove the
+  # binary RUNS on that architecture; only executing it there does, and this
+  # project owns no arm64, armv6hf, riscv64, or macOS hardware. Those are
+  # different claims and the installer must not let one pass for the other.
+  local os arch token out evidence
+  while read -r os arch token; do
+    out=$(print_asset_for "$os" "$arch") || fail "installer refused a claimed platform ($os/$arch)"
+    evidence=$(asset_field "$out" evidence)
+    case "$evidence" in
+      runtime-verified)
+        [ "$token" = linux.x86_64 ] \
+          || fail "$token claims runtime-verified, but no $token hardware has run this build"
+        ;;
+      checksum-only) : ;;
+      *) fail "$os/$arch states no evidence level for its checksum (got '$evidence')" ;;
+    esac
+  done <<CLAIMED
+$CLAIMED_PLATFORMS
+CLAIMED
+  # The distinction has to survive in the script a future editor reads, not only
+  # in this suite.
+  assert_grep 'checksum-only' "$INSTALLER" "the installer must record which assets are backed by provenance alone"
+  assert_grep 'runtime-verified' "$INSTALLER" "the installer must record which assets have actually been executed"
+  pass "each asset states whether its evidence is provenance or a real run"
+}
+
+test_installer_hashes_without_gnu_coreutils() {
+  # sha256sum is GNU coreutils and is absent from a stock macOS, so selecting the
+  # right asset while still hashing with sha256sum leaves macOS broken one line
+  # later. shasum is preinstalled there; this is the ordering the rest of
+  # firstmate's scripts already use.
+  # Read the hashing function itself, not the whole file: the header explains
+  # both tools, so a file-wide match would pass on prose alone.
+  local body first
+  body=$(sed -n '/^file_sha256() {/,/^}/p' "$INSTALLER")
+  [ -n "$body" ] || fail "the installer must keep its checksum step in one readable file_sha256 function"
+  assert_contains "$body" "shasum -a 256" "the installer must try shasum, which stock macOS has"
+  assert_contains "$body" "sha256sum" "the installer must still accept GNU coreutils where that is what exists"
+  first=$(printf '%s\n' "$body" | grep -o 'shasum -a 256\|sha256sum' | head -1)
+  [ "$first" = "shasum -a 256" ] \
+    || fail "the installer must try shasum BEFORE sha256sum, or macOS still fails at the checksum"$'\n'"$body"
+  # No hasher at all must refuse, never install an unhashed download.
+  assert_grep 'no SHA-256 tool found' "$INSTALLER" "a machine with no hasher must refuse rather than skip the checksum"
+  pass "the checksum step works on a machine without GNU coreutils"
+}
+
+test_installer_extraction_needs_no_xz() {
+  # GNU tar shells out for both -J and -z, but gzip is an essential package
+  # everywhere and xz-utils is not, so the .tar.gz assets (byte-identical
+  # payloads upstream) remove a dependency a stripped machine can lack.
+  assert_grep 'tar -xzf' "$INSTALLER" "the installer must extract the gzip asset"
+  assert_no_grep 'tar -xJf' "$INSTALLER" "the installer must not depend on an external xz"
+  # Asserted on what every platform actually resolves, so the prose above may
+  # keep explaining the xz assets without the check reading them as a fetch.
+  local os arch token out
+  while read -r os arch token; do
+    out=$(print_asset_for "$os" "$arch") || fail "installer refused a claimed platform ($os/$arch)"
+    case "$(asset_field "$out" archive)" in
+      *.tar.gz) : ;;
+      *) fail "$os/$arch resolves a non-gzip asset, reintroducing the xz dependency" ;;
+    esac
+  done <<CLAIMED
+$CLAIMED_PLATFORMS
+CLAIMED
+  pass "extraction depends on gzip only, never on xz"
+}
+
+test_installer_matrix_is_bound_to_the_pinned_version() {
+  # Every checksum is version-specific. If the pin moves and the matrix does not,
+  # the honest outcome is one refusal naming the cause, not six identical
+  # checksum mismatches with no hint of why.
+  local tmp out rc
+  tmp=$(fm_test_tmproot fm-lint-matrix)
+  mkdir -p "$tmp/bin"
+  cp "$INSTALLER" "$tmp/bin/"
+  cat > "$tmp/bin/fm-lint.sh" <<'SH'
+#!/usr/bin/env bash
+printf '9.9.9\n'
+SH
+  chmod +x "$tmp/bin/fm-lint.sh"
+  rc=0
+  out=$("$tmp/bin/fm-install-shellcheck.sh" --print-asset 2>&1) || rc=$?
+  expect_code 1 "$rc" "the installer must refuse when its matrix predates the pin"
+  assert_contains "$out" "REFUSING" "a stale matrix must read as a refusal"
+  assert_contains "$out" "$REQUIRED" "the refusal must name the version the checksums were recorded for"
+  assert_contains "$out" "9.9.9" "the refusal must name the version now pinned"
+  pass "a moved pin refuses with its cause instead of mismatching every checksum"
+}
+
 test_ensure_mode_is_not_reportable_as_a_lint_pass() {
   # A resolve that linted nothing must not be shaped like a lint run: exit status
   # is what automation reads, and a path on stdout is not a distinction.
@@ -330,6 +542,13 @@ test_cache_is_version_keyed
 test_bootstrap_verifies_the_gate_at_session_start
 test_bootstrap_remediation_is_real_and_agrees_with_the_refusal
 test_installer_bounds_its_download
+test_installer_selects_an_asset_per_claimed_platform
+test_installer_never_falls_through_to_another_architecture
+test_installer_refuses_unclaimed_architectures_by_name
+test_installer_separates_provenance_from_runtime_evidence
+test_installer_hashes_without_gnu_coreutils
+test_installer_extraction_needs_no_xz
+test_installer_matrix_is_bound_to_the_pinned_version
 test_ensure_mode_is_not_reportable_as_a_lint_pass
 test_resolution_survives_ambient_shellcheck_opts
 test_catches_a_real_lint_defect

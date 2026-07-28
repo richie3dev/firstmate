@@ -48,6 +48,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
   It pins one exact shellcheck version and lints with that version and no other; print it with `bin/fm-lint.sh --required-version`.
   You do not have to install it yourself: it resolves the pin from `PATH` first, then from a private version-keyed cache under `FM_SHELLCHECK_CACHE` (default `${XDG_CACHE_HOME:-$HOME/.cache}/firstmate/shellcheck`), and provisions that cache through `bin/fm-install-shellcheck.sh` when neither has it.
   The cache is never on `PATH` and is keyed by version, so it never rewrites the machine's own `shellcheck` and never overwrites a binary a concurrent run is executing.
+  That installer selects the asset for the machine it is running on and refuses by name, with what it detected and what to do about it, on a platform it does not claim; its header owns the platform matrix, each asset's checksum, and what evidence backs each one.
   Session-start bootstrap does the same resolution, so a machine missing the pinned build is reported then rather than at push time.
   When the pin cannot be resolved or installed, the script refuses and lints nothing; there is no degraded mode, so a zero exit always means the pinned rule set passed.
   Linting by hand at another version is not a substitute: a lower severity or an older rule set reports something CI does not, which is how work passes locally and fails CI.
