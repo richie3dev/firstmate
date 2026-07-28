@@ -82,7 +82,7 @@ Keep instructions as the authority and discovery layer, but make repeated execut
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
 - Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, and pinned shellcheck version) that CI and the no-mistakes pre-push gate both invoke.
-- It resolves the pinned shellcheck itself, provisioning a private version-keyed cache when the machine's own shellcheck is a different version, so you never need to install or upgrade a shared shellcheck to run the gate.
+- It resolves the pinned shellcheck itself, provisioning a private version-keyed cache when the machine's own shellcheck is a different version, so on any platform `bin/fm-install-shellcheck.sh` claims you never need to install or upgrade a shared shellcheck to run the gate, and on one it does not claim that installer refuses by name and prints what to do instead.
 - If it refuses, it linted nothing; never substitute a hand-run `shellcheck` at another version or severity, because that reports a different rule set than CI enforces and produces false confidence.
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - A backend-verification doc (`docs/*-backend.md`) records empirical facts, not assumptions.

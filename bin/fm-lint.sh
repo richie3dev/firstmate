@@ -58,6 +58,10 @@ set -eu
 
 # The single source of the pinned ShellCheck version. Bump here and CI follows
 # automatically via `--required-version`; the test suite reads it the same way.
+# One thing does not follow automatically: bin/fm-install-shellcheck.sh carries a
+# per-platform checksum recorded for one exact version and refuses outright when
+# its MATRIX_VERSION disagrees with this pin, so re-record that matrix and move
+# its MATRIX_VERSION in the same change or nothing can provision the new version.
 REQUIRED_SHELLCHECK=0.11.0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
